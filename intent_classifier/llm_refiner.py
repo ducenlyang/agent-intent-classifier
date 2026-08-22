@@ -18,6 +18,7 @@ from .config import (
     LLM_MODEL,
     LLM_TIMEOUT,
     REQUIRED_SLOTS,
+    SLOT_CONF_HIGH,
     PrimaryIntent,
     SecondaryIntent,
 )
@@ -149,7 +150,9 @@ class LLMRefiner:
             f"用户输入: {query}\n"
             f"上游小模型意图候选: {getattr(layer2.get('intent'), 'value', layer2.get('intent'))}"
             f" (置信度{layer2.get('confidence')})\n"
-            f"请终审意图并抽取全部槽位。"
+            f"规则层提示槽位: {json.dumps(layer2.get('rule_hint_slots') or {}, ensure_ascii=False)}\n"
+            f"小模型BIO短槽位: {json.dumps(layer2.get('bert_short_slots') or {}, ensure_ascii=False)}\n"
+            f"请终审意图并抽取全部槽位(短槽位候选仅供参考，你拥有终审权)。"
         )
         content = chat_completion(
             [
@@ -167,7 +170,8 @@ class LLMRefiner:
         return json.loads(m.group(0))
 
     def _heuristic_refine(self, query: str, layer2: dict) -> dict:
-        """无 API Key 时的离线精判：证据词校验 + 词典全量槽位抽取。"""
+        """无 API Key 时的离线精判：证据词校验 + 候选/词典槽位合并。
+        短槽位优先级：BIO高置信 > 规则提示 > 词典兜底。"""
         primary: PrimaryIntent = layer2.get("intent") or PrimaryIntent.UNKNOWN
         conf: float = layer2.get("confidence", 0.5)
 
@@ -185,11 +189,20 @@ class LLMRefiner:
             conf = min(conf, 0.5)
 
         lex = extract_lexicon_slots(query)
-        question_text = query if primary is PrimaryIntent.QUESTION_SUBJECT else None
+        # 短槽位合并：BIO高置信 > 规则提示 > 词典兜底(question_text统一由收口处理)
+        hints = layer2.get("rule_hint_slots") or {}
+        bert = layer2.get("bert_short_slots") or {}
+        short: dict[str, str | None] = {}
+        for f in ("subject", "grade"):
+            cand = bert.get(f)
+            if cand and cand.get("confidence", 0) >= SLOT_CONF_HIGH:
+                short[f] = cand["value"]
+            else:
+                short[f] = hints.get(f) or lex.get(f)
         slots = Slots(
-            subject=lex["subject"], grade=lex["grade"],
-            question_text=question_text, topic=lex["topic"],
-            emotion=lex["emotion"], time_horizon=lex["time_horizon"],
+            subject=short["subject"], grade=short["grade"],
+            topic=lex["topic"], emotion=lex["emotion"],
+            time_horizon=lex["time_horizon"],
         )
         missing = [f for f in REQUIRED_SLOTS.get(primary, []) if not getattr(slots, f)]
 

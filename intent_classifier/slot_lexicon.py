@@ -85,6 +85,19 @@ def rule_hint_slots(query: str) -> dict[str, str]:
     return {"subject": match_subject(query), "grade": match_grade(query)}
 
 
+# "元请求"特征：求题/求讲解但没带真实题目（如"帮我解一道高二数学题"）。
+# 此类 question_text 置空 → missing_slots 触发下游反问"请把题目发给我"。
+META_REQUEST_PATTERNS = [
+    "帮我解", "帮我做", "出一道", "考我一", "来一道",
+    "一道题", "一个题", "几道题", "道数学题", "道题",
+]
+
+
+def is_meta_request(query: str) -> bool:
+    """True=用户在"要题/求讲解"但未给出题目原文。"""
+    return any(p in query for p in META_REQUEST_PATTERNS)
+
+
 def extract_lexicon_slots(query: str) -> dict:
     """L3 兜底：全量长槽位词典抽取。"""
     subject = match_subject(query)

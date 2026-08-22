@@ -1,7 +1,8 @@
-"""第二层：小模型推理——仅输出【一级意图 + 置信度】，不做槽位抽取。
+"""第二层：联合多任务小模型推理（双头）。
 
-复用联合训练的 ckpt（意图头即独立训练产物，BIO头推理时休眠），无需重训。
-全部槽位由第三层 LLM 抽取（分层职责分离）。
+头A 意图：8分类 + intent_confidence
+头B BIO：subject/grade 实体槽位 + slot_confidence
+复用联合蒸馏的 ckpt（两个头都是独立训练产物），一次前向同时出两者。
 """
 from __future__ import annotations
 
@@ -18,7 +19,7 @@ from .config import (
     PrimaryIntent,
     STUDENT_JOINT_CKPT,
 )
-from .joint_model import JointIntentSlotModel
+from .joint_model import JointIntentSlotModel, decode_slots
 from .model_hub import AutoTokenizer, student_model_name
 
 with open(LABEL_MAP_PATH, "r", encoding="utf-8") as f:
@@ -30,6 +31,7 @@ LABEL2ID = {v: int(k) for k, v in LABEL_MAP.items()}
 class SmallModelOutput(BaseModel):
     intent: PrimaryIntent
     intent_confidence: float
+    bert_short_slots: dict[str, dict] = {}  # {"subject": {"value":..,"confidence":..}}
 
 
 class SmallClassifier:
@@ -51,14 +53,21 @@ class SmallClassifier:
     @torch.no_grad()
     def predict(self, query: str) -> tuple[SmallModelOutput, int]:
         t0 = time.perf_counter()
-        enc = self.tokenizer(query, truncation=True, max_length=MAX_LEN,
-                             return_tensors="pt")
-        intent_logits, _ = self.model(enc["input_ids"], enc["attention_mask"])
+        enc = self.tokenizer(
+            query, truncation=True, max_length=MAX_LEN,
+            return_tensors="pt", return_offsets_mapping=True,
+        )
+        offsets = enc.pop("offset_mapping")[0].tolist()
+        intent_logits, bio_logits = self.model(
+            enc["input_ids"], enc["attention_mask"]
+        )
         probs = torch.softmax(intent_logits, dim=-1)
         conf, pred_id = torch.max(probs, dim=-1)
+        short_slots = decode_slots(bio_logits[0], offsets, query)
         out = SmallModelOutput(
             intent=PrimaryIntent(ID2LABEL[int(pred_id.item())]),
             intent_confidence=round(float(conf.item()), 4),
+            bert_short_slots=short_slots,
         )
         return out, int((time.perf_counter() - t0) * 1000)
 

@@ -33,8 +33,11 @@ class IntentResult(BaseModel):
     primary_intent: PrimaryIntent
     secondary_intent: Optional[SecondaryIntent] = None
     confidence: float = 1.0
-    handled_by: Literal["RULE", "LLM_REFINE", "LLM_FALLBACK"]
+    handled_by: Literal["RULE", "SMALL_MODEL", "LLM_REFINE", "LLM_FALLBACK"]
     slots: Slots = Field(default_factory=Slots)
+    slot_confidence: dict[str, float] = Field(
+        default_factory=dict, description="BIO头直出的短槽位置信度 {slot: conf}"
+    )
     missing_slots: list[str] = Field(
         default_factory=list, description="必填槽位缺失项，供下游Agent追问"
     )

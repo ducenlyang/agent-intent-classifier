@@ -82,9 +82,10 @@ flowchart TD
     U(["👤 用户输入"]):::out --> L1["🛡️ L1 · 规则引擎<br/>作弊 / 心理高危关键词拦截"]:::risk
 
     L1 -- "命中 · 0ms" --> R1["🚫 直接返回拒绝 / 安抚话术<br/>结束链路"]:::risk
-    L1 -- "放行" --> L2["⚡ L2 · tiny-bert 小模型<br/>hfl/rbt3 · 38M · CPU ~20ms<br/>仅输出：意图 + 置信度（候选）"]:::model
+    L1 -- "放行" --> L2["⚡ L2 · 联合tiny-bert 双头(hfl/rbt3 · 38M · CPU)<br/>头A: 意图+置信度<br/>头B: BIO槽位 subject/grade+槽位置信度"]:::model
 
-    L2 --> L3["🧠 L3 · LLM 精判 Deepseek-v4-flash<br/>复核意图（错就修正）<br/>抽取全部槽位 subject / grade /<br/>question_text / knowledge_points /…<br/>必填校验 → missing_slots<br/>⚠️ 无Key或超时自动降级启发式"]:::llm
+    L2 -- "意图≥0.85 且 槽位≥0.80 且 非复杂<br/>短路放行(几十ms,不调LLM)" --> IR2[("IntentResult<br/>含合并槽位+BIO置信度")]:::out
+    L2 -- "低置信 / 槽位不稳 / 复杂长句" --> L3["🧠 L3 · LLM 精判 Deepseek-v4-flash<br/>复核意图（错就修正，LLM拥有终审权）<br/>抽取全部槽位 question_text /<br/>knowledge_points / topic / emotion /…<br/>必填校验 → missing_slots<br/>⚠️ 无Key或超时自动降级启发式"]:::llm
 
     L3 --> IR[("IntentResult<br/>权威结果")]:::out
     IR --> RT{{"🔀 路由分发 Router"}}:::router
@@ -129,9 +130,9 @@ flowchart TD
 |---|---|
 | 测试集全流水线意图准确率 | **100%**（298 条，合成数据同分布） |
 | L1 拦截延迟 | **0ms**（直接返回话术） |
-| L2 意图候选延迟 | **10 ~ 30ms**（CPU） |
-| L3 LLM 终审延迟 | **2 ~ 3s**（网络往返，Deepseek-v4-flash 实测） |
-| 小模型 | 38M 参数（`hfl/rbt3`，3层-768） |
+| L2 短路延迟（意图+BIO槽位一次前向） | **6 ~ 30ms**（约9成请求在此解决，不调LLM） |
+| L3 LLM 精判延迟 | **2 ~ 3s**（低置信/复杂请求才升级） |
+| 小模型 | 38M 参数（`hfl/rbt3`，3层-768，意图+BIO双头） |
 
 实测示例——LLM 复核+槽位抽取（query 里没说年级，LLM 从"高考"上下文推断补齐）：
 

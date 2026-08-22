@@ -114,6 +114,11 @@ REQUIRED_SLOTS: dict[PrimaryIntent, list[str]] = {
 }
 # 多轮槽位缓存(CACHEABLE_FIELDS)是对话后端的概念，网关无状态不定义
 
+# 分层置信阈值：L2双头(意图+BIO槽位)全部达标才短路放行，否则升级L3
+CONFIDENCE_HIGH = 0.85   # 意图置信度阈值
+SLOT_CONF_HIGH = 0.80    # 已检出短槽位(subject/grade)置信度阈值
+COMPLEX_QUERY_LEN = 40   # 超过该字数视为"太复杂"，直接升级L3
+
 # ---------------------------------------------------------------------------
 # 第三层 LLM 兜底（OpenAI 兼容接口；未配置时自动降级为启发式精判）
 # 配置来源优先级：环境变量 > config.local.json(项目根,不入库) > 默认值
