@@ -143,7 +143,7 @@ class LLMRefiner:
 
     # ------------------------------------------------------------------
     def _call_llm(self, query: str, layer2: dict) -> dict:
-        import requests  # 局部导入，无网络场景不依赖
+        from .llm_client import chat_completion
 
         user_msg = (
             f"用户输入: {query}\n"
@@ -151,22 +151,15 @@ class LLMRefiner:
             f" (置信度{layer2.get('confidence')})\n"
             f"请终审意图并抽取全部槽位。"
         )
-        resp = requests.post(
-            f"{LLM_BASE_URL.rstrip('/')}/chat/completions",
-            headers={"Authorization": f"Bearer {self.api_key}"},
-            json={
-                "model": LLM_MODEL,
-                "messages": [
-                    {"role": "system", "content": _SYSTEM_PROMPT},
-                    {"role": "user", "content": user_msg},
-                ],
-                "temperature": 0.1,
-                "max_tokens": 400,
-            },
+        content = chat_completion(
+            [
+                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "user", "content": user_msg},
+            ],
+            temperature=0.1,
+            max_tokens=400,
             timeout=LLM_TIMEOUT,
         )
-        resp.raise_for_status()
-        content = resp.json()["choices"][0]["message"]["content"]
         # 容忍 markdown 代码块包裹
         m = re.search(r"\{.*\}", content, re.S)
         if not m:

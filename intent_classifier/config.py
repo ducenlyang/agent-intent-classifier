@@ -122,20 +122,20 @@ REQUIRED_SLOTS: dict[PrimaryIntent, list[str]] = {
 _LOCAL_CONFIG = ROOT_DIR / "config.local.json"
 
 
-def _load_local_llm() -> dict:
+def _load_local_config() -> dict:
     if not _LOCAL_CONFIG.exists():
         return {}
     try:
         with open(_LOCAL_CONFIG, "r", encoding="utf-8") as f:
             data = json.load(f)
-        llm = data.get("llm", {})
-        return llm if isinstance(llm, dict) else {}
+        return data if isinstance(data, dict) else {}
     except Exception as e:
         print(f"[config] config.local.json 解析失败(忽略): {e}")
         return {}
 
 
-_llm = _load_local_llm()
+_llm = _load_local_config().get("llm", {})
+_gen = _load_local_config().get("generation", {})
 
 LLM_API_KEY = os.getenv("INTENT_LLM_API_KEY", "") or str(_llm.get("api_key") or "")
 LLM_BASE_URL = (
@@ -150,3 +150,13 @@ LLM_MODEL = (
 )
 _timeout_src = os.getenv("INTENT_LLM_TIMEOUT") or _llm.get("timeout")
 LLM_TIMEOUT = int(_timeout_src) if _timeout_src else 15
+
+# 业务 Agent 生成模型（默认复用精判模型；可在 config.local.json 的
+# "generation" 节单独指定 model/timeout，api_key/base_url 与 llm 节共用）
+GEN_MODEL = (
+    os.getenv("INTENT_GEN_MODEL", "")
+    or str(_gen.get("model") or "")
+    or LLM_MODEL
+)
+_gen_timeout_src = os.getenv("INTENT_GEN_TIMEOUT") or _gen.get("timeout")
+GEN_TIMEOUT = int(_gen_timeout_src) if _gen_timeout_src else 60

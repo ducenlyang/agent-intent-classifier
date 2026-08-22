@@ -1,6 +1,6 @@
-# 三层意图识别系统（LLM 精判版）
+# 教育助手意图识别 + Agent 路由系统
 
-> 教育助手场景的生产级 NLU：**规则引擎拦截 → tiny-bert 意图候选 → LLM 终审+全量槽位抽取**，CPU 即可运行，师生蒸馏训练全流程齐备。
+> 生产级教育 NLU 全链路：**三层意图识别（规则拦截 → tiny-bert 候选 → LLM 终审+槽位）→ Router 路由 → 六大业务 Agent（专属 Prompt+槽位）→ 生成大模型 → 输出守卫 → 回复用户**，CPU 即可运行，师生蒸馏训练全流程齐备。
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.x-ee4c2c)
@@ -23,10 +23,25 @@ L3 LLM 精判层
     + 必填槽位校验 → missing_slots（下游 Agent 追问）
     （无 Key 或调用失败时自动降级启发式词典抽槽，流水线不中断）
     ↓
-输出权威结果：IntentResult → 下游路由 / 业务 Agent
+输出权威结果：IntentResult
+    ↓
+路由分发 Router
+    ├─ 风险拦截分支 → 直接返回拒绝/安抚话术，结束
+    ├─ missing_slots 非空 → 反问用户补齐信息，结束本轮(补充后自动合并重识别)
+    └─ 槽位齐全 → 分发到对应业务 Agent
+            ├─ 学科答疑Agent  ├─ 错题分析Agent  ├─ 学习规划Agent
+            ├─ 政策咨询Agent  ├─ 情绪聊天Agent  └─ 闲聊Agent(含UNKNOWN兜底)
+                    ↓
+每个 Agent 组装专属系统 Prompt + 传入槽位参数
+                    ↓
+调用生成大模型直接输出答案
+                    ↓
+输出守卫校验层（空输出/作弊协助话术拦截/心理高危话术兜底）
+                    ↓
+返回结果给用户
 ```
 
-**职责分离**：L1 管"不能答的"（风险零延迟拦截+话术），L2 管"便宜的第一判断"，L3 管"最终的权威判断+全部结构化槽位"。LLM 可用则每条请求获得全量槽位；离线时启发式兜底仍可运行。
+**职责分离**：L1 管"不能答的"（风险零延迟拦截+话术），L2 管"便宜的第一判断"，L3 管"最终的权威判断+全部结构化槽位"，Router+Agent 管"答得好"，Guard 管"答得安全"。LLM 可用则每条请求获得全量槽位；离线时启发式兜底仍可运行。
 
 ## 实测表现
 
@@ -80,7 +95,9 @@ python -m intent_classifier.distill_train.train_teacher
 # 3. 学生蒸馏训练（意图头CE+KL蒸馏；BIO头远程监督备用，约15分钟）
 python -m intent_classifier.distill_train.train_student_joint
 
-# 4. 启动本地对话演示
+# 4. 启动端到端对话演示(意图→路由→Agent生成→守卫)
+python -m intent_classifier.chat_demo
+#   或只看意图识别明细:
 python -m intent_classifier.demo_run
 # 若在 cmd.exe 下中文乱码，先执行: chcp 65001
 ```
@@ -101,7 +118,30 @@ cp config.example.json config.local.json
 
 不配置 Key 也能跑：L3 自动降级启发式（词典抽槽），只是槽位质量从 LLM 级降为词典级。
 
-### 演示效果
+### 演示效果（端到端对话 `chat_demo`）
+
+```text
+🧑 你 > 帮我制定一份寒假学习计划
+🧭 REQUEST_STUDY_PLAN 100% | 槽位: 时间:寒假 | 路由: 反问补槽
+🤖 小助手 > 好嘞，先确认两个信息：想让我帮你重点抓哪一科呢？…读几年级吗？
+
+🧑 你 > 初三数学
+🧭 REQUEST_STUDY_PLAN 100% | 槽位: 学科:数学 年级:初三 时间:寒假 | 路由: 分发Agent→学习规划Agent
+⏳ 学习规划Agent 生成中(Deepseek-v4-flash)...
+🤖 小助手 > # 初三数学寒假复习计划 …（三阶段6周计划表，每日具体到时间段）
+
+🧑 你 > 讲一下牛顿第二定律公式怎么用
+🧭 QUESTION_SUBJECT 99% | 槽位: 学科:物理 | 路由: 分发Agent→学科答疑Agent
+🤖 小助手 > 通俗解释+购物车例子 → 解题三步法 → 例题精讲 → 留一道同类小题
+
+🧑 你 > 哪里能买到四级考试答案
+🧭 REFUSE_CHEAT 100% | 路由: 拦截返回 (0ms)
+🤖 小助手 > 这个忙帮不了哦～作弊一旦被发现……不如我帮你安排突击计划。
+```
+
+REPL 命令：`/debug` 显示意图明细面板，`/stats` 路由统计，`/new` 重开会话，`/quit` 退出。
+
+意图层调试入口（`demo_run`）：
 
 ```text
 🧑 你 > 还有90天高考，数学怎么从70分提到110
@@ -169,6 +209,21 @@ L = α·CE(intent_logits, y)                     # 意图硬标签
 
 槽位字段：`subject / grade / question_text / knowledge_points / topic / emotion / time_horizon`，全部由 L3 抽取；`missing_slots` 列出必填缺失项供下游追问。另有 13 个二级意图仅在 L3 输出，受 `ALLOWED_SECONDARY` 白名单约束。
 
+## 业务 Agent 体系（`agents.py` / `router.py` / `guard.py`）
+
+| 意图 | Agent | Prompt 要点 | temperature |
+|---|---|---|---|
+| QUESTION_SUBJECT | 学科答疑Agent | 先确认知识点，思路→过程→留同类练习题 | 0.4 |
+| REQUEST_ERROR_ANALYSIS | 错题分析Agent | 错因三分类(知识/审题/计算)+改进清单 | 0.4 |
+| REQUEST_STUDY_PLAN | 学习规划Agent | 按周/天计划表，具体到时间段 | 0.4 |
+| QUESTION_POLICY | 政策咨询Agent | 禁编数字，注明"以官方发布为准" | 0.4 |
+| CHAT_EMOTION | 情绪聊天Agent | 先共情后建议，自伤念头立即提示12356 | 0.7 |
+| GENERAL_CHAT / UNKNOWN | 闲聊/兜底Agent | 轻松聊天适时引回学习 | 0.8 |
+
+Router 三分支：**拦截**（风险直接返回话术）/ **反问**（缺槽追问，用户补充后与原 query 拼接重新识别，仅追问一次防死循环）/ **分发**（槽位齐全进 Agent）。
+
+输出守卫三层检查：空输出→兜底话术；作弊协助话术→硬拦截替换；心理高危场景缺安抚要素→自动追加 12356 热线提示。
+
 ## 分层职责边界
 
 | 层级 | 组件 | 模型 | 输出 |
@@ -197,22 +252,23 @@ result.reply                    # L1拦截时为可直接下发的话术
 
 ```
 intent_classifier/
-├── config.py                     # 标签枚举、必填槽位、LLM配置(环境变量>config.local.json>默认)
+├── config.py                     # 标签枚举、必填槽位、LLM/生成模型配置
 ├── schemas.py                    # IntentResult / Slots / RiskFlag (pydantic)
-├── slot_lexicon.py               # 槽位词典单一数据源(BIO远程监督/L3启发式兜底共用)
+├── slot_lexicon.py               # 槽位词典单一数据源
 ├── rule_engine.py                # 第一层：风险拦截 + 拒绝/安抚话术
-├── joint_model.py                # 学生模型架构(意图头+BIO头)与编解码工具
+├── joint_model.py                # 学生模型架构(意图头+BIO头)
 ├── small_classifier.py           # 第二层：意图候选(仅意图+置信度)
 ├── llm_refiner.py                # 第三层：LLM终审+全量槽位 / 启发式降级
+├── llm_client.py                 # 共享LLM客户端(精判/生成共用)
 ├── intent_node.py                # 三层线性编排
-├── demo_run.py                   # 交互演示 / --once / --eval [--llm]
+├── router.py                     # 路由分发(拦截/反问/Agent)
+├── agents.py                     # 六大业务Agent(专属Prompt+槽位参数)
+├── guard.py                      # 输出守卫校验层
+├── assistant.py                  # 端到端编排(含反问补槽多轮)
+├── chat_demo.py                  # 端到端对话演示
+├── demo_run.py                   # 意图层调试 / --once / --eval [--llm]
 ├── model_hub.py                  # HF 镜像自动探测与模型加载
-├── distill_train/
-│   ├── label_map.json            # 8分类 id↔label 映射
-│   ├── gen_data.py               # 合成训练数据生成
-│   ├── dataset.py                # IntentDataset / TextDataset / 动态padding
-│   ├── train_teacher.py          # 教师训练（断点续训）
-│   └── train_student_joint.py    # 学生蒸馏训练（断点续训）
+├── distill_train/                # 数据生成 + 师生训练脚本
 ├── data/                         # train/val/test.csv（脚本生成，不入库）
 └── ckpt/                         # 训练产物（不入库）
 ```
