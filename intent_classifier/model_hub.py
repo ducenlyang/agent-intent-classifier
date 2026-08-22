@@ -27,6 +27,7 @@ elif "HF_ENDPOINT" not in os.environ and not _hf_reachable():
 # 在设置好 HF_ENDPOINT 之后再导入 transformers，镜像配置才会生效
 from transformers import (  # noqa: E402
     AutoConfig,
+    AutoModel,
     AutoModelForSequenceClassification,
     AutoTokenizer,
 )
@@ -54,6 +55,7 @@ def student_model_name() -> str:
 
 __all__ = [
     "AutoConfig",
+    "AutoModel",
     "AutoModelForSequenceClassification",
     "AutoTokenizer",
     "student_model_name",

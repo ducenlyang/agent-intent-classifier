@@ -1,14 +1,16 @@
-"""第一层：规则引擎（硬拦截，零推理）。
+"""第一层：规则引擎（硬拦截 + 词典提示槽）。
 
 作弊类关键词 → REFUSE_CHEAT；心理高危关键词 → CHAT_EMOTION + psych_risk。
 命中直接返回 IntentResult；未命中放行进入第二层。
+同时提供 rule_hint_slots：词典捞取 subject/grade 提示槽位（供 L2 合并、L3 终审）。
 """
 from __future__ import annotations
 
 import time
 
 from .config import PrimaryIntent, SecondaryIntent
-from .schemas import IntentResult, RiskFlag
+from .schemas import IntentResult, RiskFlag, Slots
+from .slot_lexicon import rule_hint_slots as _rule_hint_slots
 
 # 作弊类关键词：直接判 REFUSE_CHEAT（下游回复器负责礼貌拒绝+引导）
 CHEAT_KEYWORDS: list[str] = [
@@ -39,8 +41,13 @@ def _matched(text: str, keywords: list[str]) -> list[str]:
 class RuleEngine:
     """无状态关键词拦截器。"""
 
+    def hint_slots(self, query: str) -> dict[str, str]:
+        """L1 词典提示槽位（{"subject": .., "grade": ..}，可能为 None）。"""
+        return _rule_hint_slots(query)
+
     def check(self, query: str) -> IntentResult | None:
         t0 = time.perf_counter()
+        hints = self.hint_slots(query)  # 拦截结果也附带提示槽位，供下游参考
 
         hit_cheat = _matched(query, CHEAT_KEYWORDS)
         if hit_cheat:
@@ -50,6 +57,7 @@ class RuleEngine:
                 secondary_intent=SecondaryIntent.UNCLEAR,
                 confidence=1.0,
                 handled_by="RULE",
+                slots=Slots(subject=hints["subject"], grade=hints["grade"]),
                 risk=RiskFlag(cheat_risk=True, matched_keywords=hit_cheat),
                 latency_ms=int((time.perf_counter() - t0) * 1000),
                 decision_trace=[f"规则层命中作弊关键词: {hit_cheat}"],
@@ -64,6 +72,7 @@ class RuleEngine:
                 secondary_intent=SecondaryIntent.EMOTION_CRISIS,
                 confidence=1.0,
                 handled_by="RULE",
+                slots=Slots(subject=hints["subject"], grade=hints["grade"]),
                 risk=RiskFlag(psych_risk="high", matched_keywords=hit_psych),
                 latency_ms=int((time.perf_counter() - t0) * 1000),
                 decision_trace=[f"规则层命中心理高危关键词: {hit_psych}"],

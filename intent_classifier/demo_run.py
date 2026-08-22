@@ -47,7 +47,11 @@ def _fmt_slots(r: IntentResult) -> str:
                     ("emotion", "情绪"), ("time_horizon", "时间")]:
         v = getattr(s, key)
         if v:
-            parts.append(f"{zh}:{v}")
+            conf = r.slot_confidence.get(key)
+            parts.append(f"{zh}:{v}" + (f"(BIO {conf:.2f})" if conf else ""))
+    if s.question_text:
+        q = s.question_text if len(s.question_text) <= 24 else s.question_text[:24] + "…"
+        parts.append(f"问题:{q}")
     if s.knowledge_points:
         parts.append(f"知识点:{'、'.join(s.knowledge_points)}")
     return "  ".join(parts) if parts else "—"
@@ -61,6 +65,8 @@ def print_result(r: IntentResult) -> None:
     print(f"│ 🎯 置信度  : {r.confidence:.2%}")
     print(f"│ ⚙️  处理层  : {LAYER_ZH[r.handled_by]}   耗时 {r.latency_ms}ms")
     print(f"│ 🧩 槽位    : {_fmt_slots(r)}")
+    if r.missing_slots:
+        print(f"│ ❓ 缺槽待问: {', '.join(r.missing_slots)}")
     if r.risk.cheat_risk or r.risk.psych_risk != "none":
         print(f"│ ⚠️  风险    : 作弊={r.risk.cheat_risk} "
               f"心理={r.risk.psych_risk} 命中词={r.risk.matched_keywords or '—'}")
@@ -111,7 +117,7 @@ def run_eval(pipeline: IntentPipeline) -> None:
     if not test_csv.exists():
         print(f"未找到测试集 {test_csv}，请先运行 distill_train.gen_data")
         return
-    rows = list(csv.DictReader(open(test_csv, encoding="utf-8")))
+    rows = list(csv.DictReader(open(test_csv, encoding="utf-8-sig")))
     correct = 0
     layer_hits: Counter = Counter()
     per_class = defaultdict(lambda: [0, 0])  # label -> [正确, 总数]

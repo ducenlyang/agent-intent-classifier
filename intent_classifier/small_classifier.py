@@ -1,13 +1,13 @@
-"""第二层：学生小模型（tiny-bert）离线推理。
+"""第二层：联合多任务小模型推理（意图分类头 + BIO 槽位标注头）。
 
-只输出【一级意图 + 置信度】，不做槽位抽取（槽位由第三层 LLM 填充）。
-加载优先级：ckpt/student_final(save_pretrained) → ckpt/student_best.pt → 原始预训练模型(未蒸馏,告警)。
+输出：intent / intent_confidence / bert_short_slots(subject,grade 含置信度)。
+长槽位(topic/emotion/time...)不在本层职责内，由第三层抽取。
+加载 ckpt/student_joint.pt；不存在则报错并提示先训练。
 """
 from __future__ import annotations
 
 import json
 import time
-from pathlib import Path
 
 import torch
 from pydantic import BaseModel
@@ -17,14 +17,10 @@ from .config import (
     MAX_LEN,
     NUM_LABELS,
     PrimaryIntent,
-    STUDENT_CKPT,
-    STUDENT_SAVE_DIR,
+    STUDENT_JOINT_CKPT,
 )
-from .model_hub import (
-    AutoModelForSequenceClassification,
-    AutoTokenizer,
-    student_model_name,
-)
+from .joint_model import JointIntentSlotModel, decode_slots
+from .model_hub import AutoTokenizer, student_model_name
 
 with open(LABEL_MAP_PATH, "r", encoding="utf-8") as f:
     LABEL_MAP = json.load(f)
@@ -34,74 +30,53 @@ LABEL2ID = {v: int(k) for k, v in LABEL_MAP.items()}
 
 class SmallModelOutput(BaseModel):
     intent: PrimaryIntent
-    confidence: float
+    intent_confidence: float
+    bert_short_slots: dict[str, dict] = {}  # {"subject": {"value":..,"confidence":..}}
 
 
 class SmallClassifier:
-    def __init__(self, ckpt_path: str | Path | None = None):
-        self.model_name = student_model_name()
-        self.source = "untrained-pretrained"  # 记录权重来源，便于诊断
+    def __init__(self, ckpt_path=None):
+        if not STUDENT_JOINT_CKPT.exists():
+            raise FileNotFoundError(
+                f"未找到联合模型权重 {STUDENT_JOINT_CKPT}，请先运行:\n"
+                f"  python -m intent_classifier.distill_train.train_student_joint"
+            )
         self.device = torch.device("cpu")  # 生产定位：CPU 离线部署
-
-        # 1) 优先加载蒸馏训练产物 save_pretrained 目录
-        if STUDENT_SAVE_DIR.exists():
-            self.tokenizer = AutoTokenizer.from_pretrained(STUDENT_SAVE_DIR)
-            self.model = AutoModelForSequenceClassification.from_pretrained(
-                STUDENT_SAVE_DIR
-            )
-            self.source = f"distilled:{STUDENT_SAVE_DIR}"
-        else:
-            self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-            self.model = AutoModelForSequenceClassification.from_pretrained(
-                self.model_name, num_labels=NUM_LABELS
-            )
-            # 2) 其次加载 state_dict 蒸馏权重
-            real_ckpt = Path(ckpt_path) if ckpt_path else STUDENT_CKPT
-            if real_ckpt.exists():
-                state = torch.load(real_ckpt, map_location="cpu")
-                self.model.load_state_dict(state)
-                self.source = f"distilled:{real_ckpt}"
-            else:
-                # 3) 都没有 → 用原始预训练分类头（演示可跑，但精度不保证）
-                print(
-                    f"[SmallClassifier] 警告: 未找到蒸馏权重({STUDENT_CKPT})，"
-                    f"当前使用未训练的 {self.model_name}，请先执行 distill_train 训练。"
-                )
-        self.model.to(self.device)
-        self.model.eval()
-
-    def _encode(self, query: str):
-        # 单条推理无需 padding，截断到 MAX_LEN 即可
-        return self.tokenizer(
-            query, truncation=True, max_length=MAX_LEN, return_tensors="pt",
-        )
+        bundle = torch.load(STUDENT_JOINT_CKPT, map_location="cpu")
+        self.model_name = bundle.get("base_model_name", student_model_name())
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        self.model = JointIntentSlotModel(self.model_name, num_intents=NUM_LABELS)
+        self.model.load_state_dict(bundle["state_dict"])
+        self.model.to(self.device).eval()
+        self.source = f"joint-distilled:{STUDENT_JOINT_CKPT}"
 
     @torch.no_grad()
-    def predict(self, query: str) -> SmallModelOutput:
+    def predict(self, query: str) -> tuple[SmallModelOutput, int]:
         t0 = time.perf_counter()
-        inputs = self._encode(query)
-        logits = self.model(**inputs).logits
-        probs = torch.softmax(logits, dim=-1)
+        enc = self.tokenizer(
+            query, truncation=True, max_length=MAX_LEN,
+            return_tensors="pt", return_offsets_mapping=True,
+        )
+        offsets = enc.pop("offset_mapping")[0].tolist()
+        intent_logits, bio_logits = self.model(
+            enc["input_ids"], enc["attention_mask"]
+        )
+        probs = torch.softmax(intent_logits, dim=-1)
         conf, pred_id = torch.max(probs, dim=-1)
-        return SmallModelOutput(
+        short_slots = decode_slots(bio_logits[0], offsets, query)
+        out = SmallModelOutput(
             intent=PrimaryIntent(ID2LABEL[int(pred_id.item())]),
-            confidence=round(float(conf.item()), 4),
-        ), int((time.perf_counter() - t0) * 1000)
-
-    @torch.no_grad()
-    def predict_batch(self, queries: list[str]) -> list[SmallModelOutput]:
-        results = []
-        for q in queries:  # CPU 单条推理已足够快，逐条保持与线上一致的行为
-            out, _ = self.predict(q)
-            results.append(out)
-        return results
+            intent_confidence=round(float(conf.item()), 4),
+            bert_short_slots=short_slots,
+        )
+        return out, int((time.perf_counter() - t0) * 1000)
 
 
 _classifier: SmallClassifier | None = None
 
 
 def get_small_classifier() -> SmallClassifier:
-    """进程内单例，首次调用才加载模型（避免 import 时下载）。"""
+    """进程内单例，首次调用才加载模型。"""
     global _classifier
     if _classifier is None:
         _classifier = SmallClassifier()

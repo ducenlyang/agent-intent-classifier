@@ -9,14 +9,15 @@ from .config import PrimaryIntent, SecondaryIntent
 
 
 class Slots(BaseModel):
-    """槽位（仅第三层 LLM 精判填充；规则层/小模型层不抽取）。"""
+    """槽位：短槽位(subject/grade)可由 L2 填充；长槽位由第三层填充。"""
 
     subject: Optional[str] = Field(None, description="学科，如 数学/物理/英语")
     grade: Optional[str] = Field(None, description="年级，如 高三/初二")
-    knowledge_points: Optional[list[str]] = Field(None, description="知识点列表")
+    question_text: Optional[str] = Field(None, description="长开放槽位：题目/问题原文")
+    knowledge_points: Optional[list[str]] = Field(None, description="知识点列表(仅LLM)")
     topic: Optional[str] = Field(None, description="主题，如 高考/中考/寒假")
-    emotion: Optional[str] = Field(None, description="情绪极性，如 焦虑/低落/平静")
-    time_horizon: Optional[str] = Field(None, description="时间范围，如 100天/寒假/一个月")
+    emotion: Optional[str] = Field(None, description="情绪极性，如 焦虑/低落/压力")
+    time_horizon: Optional[str] = Field(None, description="时间范围，如 90天/寒假")
 
 
 class RiskFlag(BaseModel):
@@ -34,6 +35,12 @@ class IntentResult(BaseModel):
     confidence: float = 1.0
     handled_by: Literal["RULE", "SMALL_MODEL", "LLM_REFINE", "LLM_FALLBACK"]
     slots: Slots = Field(default_factory=Slots)
+    slot_confidence: dict[str, float] = Field(
+        default_factory=dict, description="BIO头输出的短槽位置信度 {slot: conf}"
+    )
+    missing_slots: list[str] = Field(
+        default_factory=list, description="必填槽位缺失项，供下游Agent追问"
+    )
     risk: RiskFlag = Field(default_factory=RiskFlag)
     latency_ms: int = 0
     decision_trace: list[str] = Field(default_factory=list)  # 各层决策路径，便于排查

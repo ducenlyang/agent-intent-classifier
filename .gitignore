@@ -14,6 +14,7 @@ intent_classifier/data/
 # IDE / 系统
 .idea/
 .vscode/
+.vs/
 .DS_Store
 Thumbs.db
 

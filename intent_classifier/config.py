@@ -15,8 +15,7 @@ CKPT_DIR = PKG_DIR / "ckpt"
 DATA_DIR = PKG_DIR / "data"
 
 TEACHER_CKPT = CKPT_DIR / "teacher_best.pt"
-STUDENT_CKPT = CKPT_DIR / "student_best.pt"
-STUDENT_SAVE_DIR = CKPT_DIR / "student_final"  # save_pretrained 目录，推理优先加载
+STUDENT_JOINT_CKPT = CKPT_DIR / "student_joint.pt"  # 联合多任务模型(意图+BIO槽位)
 LABEL_MAP_PATH = DISTILL_DIR / "label_map.json"
 
 CKPT_DIR.mkdir(parents=True, exist_ok=True)
@@ -107,7 +106,16 @@ MAX_LEN = 64
 # ---------------------------------------------------------------------------
 # 分层阈值
 # ---------------------------------------------------------------------------
-CONFIDENCE_HIGH = 0.85  # 第二层置信度 ≥ 该值直接输出，跳过第三层
+CONFIDENCE_HIGH = 0.85  # 第二层意图置信度 ≥ 该值直接输出，跳过第三层
+SLOT_CONF_HIGH = 0.80   # 已检测到的短槽位(subject/grade)置信度须 ≥ 该值才放行
+
+# 必填槽位校验（行业槽位填充做法：缺失槽位由下游 Agent 追问补全）
+REQUIRED_SLOTS: dict[PrimaryIntent, list[str]] = {
+    PrimaryIntent.QUESTION_SUBJECT: ["subject"],         # 讲题要知道讲哪科
+    PrimaryIntent.REQUEST_STUDY_PLAN: ["subject", "grade"],  # 排计划要学科+年级
+    PrimaryIntent.REQUEST_ERROR_ANALYSIS: ["subject"],   # 分析错题要知道哪科
+    # QUESTION_POLICY / CHAT_EMOTION / REFUSE_CHEAT / GENERAL_CHAT / UNKNOWN 无必填
+}
 
 # ---------------------------------------------------------------------------
 # 第三层 LLM 兜底（OpenAI 兼容接口；未配置 API Key 时自动降级为启发式精判）
