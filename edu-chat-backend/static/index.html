@@ -62,6 +62,11 @@
   .bubble th, .bubble td { border: 1px solid #e2e8f0; padding: 5px 10px; text-align: left; }
   .bubble th { background: #f1f5f9; color: #334155; white-space: nowrap; }
   .bubble hr { border: none; border-top: 1px solid #e2e8f0; margin: 10px 0; }
+  .bubble .math { font-family: Cambria Math, "Times New Roman", Georgia, serif;
+                  background: #f8fafc; border: 1px solid #eef2f7; border-radius: 6px;
+                  padding: 1px 7px; margin: 0 2px; font-size: 14px; white-space: nowrap; }
+  .bubble p:has(> .math:only-child) { text-align: center; margin: 8px 0; }
+  .bubble p:has(> .math:only-child) .math { display: inline-block; padding: 6px 14px; }
   .thinking span { display: inline-block; width: 6px; height: 6px; margin-right: 4px;
                    background: #b9c1cf; border-radius: 50%; animation: blink 1.2s infinite; }
   .thinking span:nth-child(2) { animation-delay: .2s; }
@@ -97,18 +102,62 @@
 <script>
 const $ = id => document.getElementById(id);
 
-/* ---------- 轻量 Markdown 渲染（零依赖：标题/加粗/列表/表格/代码/分隔线/LaTeX定界符） ---------- */
+/* ---------- 轻量 Markdown + LaTeX 渲染（零依赖，离线可用） ---------- */
 function esc(t) { return (t||"").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+
+/* LaTeX → Unicode：覆盖教育场景常用符号/上下标/分数/根号 */
+const LATEX_SYMBOLS = {
+  "\\times": "×", "\\div": "÷", "\\pm": "±", "\\mp": "∓", "\\cdot": "·",
+  "\\le": "≤", "\\leq": "≤", "\\ge": "≥", "\\geq": "≥", "\\neq": "≠", "\\ne": "≠",
+  "\\approx": "≈", "\\equiv": "≡", "\\infty": "∞", "\\pi": "π", "\\alpha": "α",
+  "\\beta": "β", "\\gamma": "γ", "\\theta": "θ", "\\lambda": "λ", "\\mu": "μ",
+  "\\sum": "∑", "\\int": "∫", "\\prod": "∏", "\\sqrt": "√",
+  "\\rightarrow": "→", "\\to": "→", "\\Rightarrow": "⇒", "\\mapsto": "↦",
+  "\\cdots": "⋯", "\\ldots": "…", "\\dots": "…",
+  "\\in": "∈", "\\notin": "∉", "\\subset": "⊂", "\\cup": "∪", "\\cap": "∩",
+  "\\degree": "°", "\\circ": "°",
+  "\\left": "", "\\right": "", "\\quad": "  ", "\\qquad": "    ",
+  "\\;": " ", "\\,": " ", "\\ ": " ",
+};
+const SUP_MAP = {"0":"⁰","1":"¹","2":"²","3":"³","4":"⁴","5":"⁵","6":"⁶","7":"⁷","8":"⁸","9":"⁹","-":"⁻","+":"⁺","n":"ⁿ","(":"⁽",")":"⁾","a":"ᵃ","b":"ᵇ","x":"ˣ"};
+const SUB_MAP = {"0":"₀","1":"₁","2":"₂","3":"₃","4":"₄","5":"₅","6":"₆","7":"₇","8":"₈","9":"₉","-":"₋","+":"₊","n":"ₙ","a":"ₐ","x":"ₓ"};
+const toSup = t => [...t].map(c => SUP_MAP[c] ?? c).join("");
+const toSub = t => [...t].map(c => SUB_MAP[c] ?? c).join("");
+
+function latexToText(s) {
+  s = s.replace(/\\text\{([^{}]*)\}/g, "$1")            // \text{或} → 或
+       .replace(/\\d?frac\{([^{}]+)\}\{([^{}]+)\}/g, "($1)/($2)")  // \frac{a}{b}
+       .replace(/\\sqrt\{([^{}]+)\}/g, "√($1)");         // \sqrt{x}
+  const keys = Object.keys(LATEX_SYMBOLS).sort((a, b) => b.length - a.length);
+  for (const k of keys) s = s.split(k).join(LATEX_SYMBOLS[k]);
+  return s.replace(/\^\{([^{}]+)\}|\^(\w)/g, (m, a, b) => toSup(a ?? b))
+          .replace(/_\{([^{}]+)\}|_(\w)/g, (m, a, b) => toSub(a ?? b));
+}
+
 function inline(t) {
   return esc(t)
     .replace(/`([^`]+)`/g, "<code>$1</code>")
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/\*([^*\n]+)\*/g, "<em>$1</em>")
-    .replace(/\\\[([^\\]*)\\\]/g, "$1")   // 去掉 LaTeX 定界符 \[ \]
-    .replace(/\\\(([^\\]*)\\\)/g, "$1");  // 去掉 \( \)
+    .replace(/\^\{([^{}]+)\}|\^(\w)/g, (m, a, b) => toSup(a ?? b))   // 裸文本上标 x^2
+    .replace(/_\{([^{}]+)\}|_(\w)/g, (m, a, b) => toSub(a ?? b));    // 裸文本下标 a_1
 }
+
 function mdToHtml(src) {
-  const lines = (src || "").split(/\r?\n/);
+  // 第一步：先抽取公式（支持跨行 \[...\] 块），替换为占位符，避免被逐行处理拆散
+  const maths = [];
+  const PH = i => `\u0000M${i}\u0000`;
+  let s = src || "";
+  s = s.replace(/\\\[([\s\S]*?)\\\]/g, (_, m) => {
+    maths.push(`<span class="math">${latexToText(esc(m).trim())}</span>`); return PH(maths.length - 1);
+  });
+  s = s.replace(/\\\(([\s\S]*?)\\\)/g, (_, m) => {
+    maths.push(`<span class="math">${latexToText(esc(m).trim())}</span>`); return PH(maths.length - 1);
+  });
+  s = s.replace(/\\[\\()\]]/g, "");   // 清理残留的孤立定界符
+
+  // 第二步：逐行 Markdown 处理（占位符原样保留）
+  const lines = s.split(/\r?\n/);
   const out = []; let list = null, table = [];
   const closeList = () => { if (list) { out.push("</" + list + ">"); list = null; } };
   const flushTable = () => {
@@ -143,7 +192,8 @@ function mdToHtml(src) {
     else { closeList(); out.push(`<p>${inline(t)}</p>`); }
   }
   closeList(); flushTable();
-  return out.join("");
+  // 第三步：恢复公式占位符
+  return out.join("").replace(/\u0000M(\d+)\u0000/g, (_, i) => maths[+i]);
 }
 
 /* ---------- 会话存储（前端：会话列表+展示历史，localStorage） ---------- */
