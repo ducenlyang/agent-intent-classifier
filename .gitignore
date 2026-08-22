@@ -11,6 +11,9 @@ intent_classifier/ckpt/
 # 生成的数据集（通过 gen_data.py 重新生成）
 intent_classifier/data/
 
+# 本地密钥配置（模板见 config.example.json）
+config.local.json
+
 # IDE / 系统
 .idea/
 .vscode/

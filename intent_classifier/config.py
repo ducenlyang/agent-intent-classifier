@@ -1,6 +1,7 @@
 """全局配置：标签体系、置信度阈值、模型与路径、LLM 兜底配置。"""
 from __future__ import annotations
 
+import json
 import os
 from enum import Enum
 from pathlib import Path
@@ -118,14 +119,39 @@ REQUIRED_SLOTS: dict[PrimaryIntent, list[str]] = {
 }
 
 # ---------------------------------------------------------------------------
-# 第三层 LLM 兜底（OpenAI 兼容接口；未配置 API Key 时自动降级为启发式精判）
-# 通过环境变量配置：
-#   INTENT_LLM_API_KEY   API Key（必填才启用真实 LLM）
-#   INTENT_LLM_BASE_URL  默认智谱开放平台
-#   INTENT_LLM_MODEL     默认 glm-4-flash
-#   INTENT_LLM_TIMEOUT   秒，默认 15
+# 第三层 LLM 兜底（OpenAI 兼容接口；未配置时自动降级为启发式精判）
+# 配置来源优先级：环境变量 > config.local.json(项目根,不入库) > 默认值
+#   环境变量: INTENT_LLM_API_KEY / INTENT_LLM_BASE_URL / INTENT_LLM_MODEL / INTENT_LLM_TIMEOUT
+#   本地文件: 复制 config.example.json 为 config.local.json 后填写
 # ---------------------------------------------------------------------------
-LLM_API_KEY = os.getenv("INTENT_LLM_API_KEY", "")
-LLM_BASE_URL = os.getenv("INTENT_LLM_BASE_URL", "https://open.bigmodel.cn/api/paas/v4")
-LLM_MODEL = os.getenv("INTENT_LLM_MODEL", "glm-4-flash")
-LLM_TIMEOUT = int(os.getenv("INTENT_LLM_TIMEOUT", "15"))
+_LOCAL_CONFIG = ROOT_DIR / "config.local.json"
+
+
+def _load_local_llm() -> dict:
+    if not _LOCAL_CONFIG.exists():
+        return {}
+    try:
+        with open(_LOCAL_CONFIG, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        llm = data.get("llm", {})
+        return llm if isinstance(llm, dict) else {}
+    except Exception as e:
+        print(f"[config] config.local.json 解析失败(忽略): {e}")
+        return {}
+
+
+_llm = _load_local_llm()
+
+LLM_API_KEY = os.getenv("INTENT_LLM_API_KEY", "") or str(_llm.get("api_key") or "")
+LLM_BASE_URL = (
+    os.getenv("INTENT_LLM_BASE_URL", "")
+    or str(_llm.get("base_url") or "")
+    or "https://open.bigmodel.cn/api/paas/v4"
+)
+LLM_MODEL = (
+    os.getenv("INTENT_LLM_MODEL", "")
+    or str(_llm.get("model") or "")
+    or "glm-4-flash"
+)
+_timeout_src = os.getenv("INTENT_LLM_TIMEOUT") or _llm.get("timeout")
+LLM_TIMEOUT = int(_timeout_src) if _timeout_src else 15

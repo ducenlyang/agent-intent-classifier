@@ -185,14 +185,25 @@ L = α·CE(intent_logits, y)                     # 意图硬标签
 
 默认不配置 Key，第三层走启发式终审（证据词校验 + 候选槽位合并 + 词典抽取），开箱即用。配置后启用真实 LLM 终审（OpenAI 兼容接口）：
 
+**方式一：本地配置文件（推荐）**——复制模板并填写，该文件已 gitignore 不会入库：
+
 ```bash
-export INTENT_LLM_API_KEY=你的key
-export INTENT_LLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4  # 默认，智谱开放平台
-export INTENT_LLM_MODEL=glm-4-flash                             # 默认
-export INTENT_LLM_TIMEOUT=15                                    # 秒
+cp config.example.json config.local.json
+# 编辑 config.local.json:
+# { "llm": { "api_key": "sk-xxx", "base_url": "https://chatapi.weixin.qq.com/openai/v1",
+#            "model": "Deepseek-v4-flash", "timeout": 30 } }
 ```
 
-LLM 输出经白名单校验（非法枚举/越界置信度/幻觉缺槽自动回退），不会向下游透传脏数据。
+**方式二：环境变量**（优先级高于配置文件）：
+
+```bash
+export INTENT_LLM_API_KEY=你的key
+export INTENT_LLM_BASE_URL=https://chatapi.weixin.qq.com/openai/v1
+export INTENT_LLM_MODEL=Deepseek-v4-flash
+export INTENT_LLM_TIMEOUT=30    # 秒
+```
+
+配置优先级：环境变量 > `config.local.json` > 默认值。LLM 输出经白名单校验（非法枚举/越界置信度/幻觉缺槽自动回退），调用失败自动降级启发式，不会向下游透传脏数据。
 
 ## 库用法
 

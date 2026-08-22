@@ -128,7 +128,8 @@ class LLMRefiner:
         t0 = time.perf_counter()
         if self.available:
             try:
-                parsed = self._call_llm(query, layer2)
+                raw = self._call_llm(query, layer2)
+                parsed = _validate(raw, query, layer2)  # 白名单校验后再构建结果
                 result = self._build_result(query, layer2, parsed, "LLM_REFINE")
                 return result, int((time.perf_counter() - t0) * 1000)
             except Exception as e:  # 网络/解析异常 → 启发式兜底
