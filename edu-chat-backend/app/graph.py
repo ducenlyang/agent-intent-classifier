@@ -1,13 +1,16 @@
-"""LangGraph 对话编排（方案版 5 节点工作流）：
+"""LangGraph 对话编排（方案版 5 节点工作流，支持流式自定义事件）：
 
 START → ①call_intent_gateway(HTTP调网关,无状态单句识别)
-      → ②slot_merge_and_router(后端独有: 缓存槽位合并+二次判缺+三路分支)
+      → ②slot_merge_and_router(缓存槽位合并+二次判缺+三路分支)
            ├─ A 风险 → ③risk_reply → END
            ├─ B 缺槽 → ②内生成反问话术 → END
-           └─ C 齐全 → ④dispatch_agent(6大Agent生成) → ⑤output_guard → END
+           └─ C 齐全 → ④dispatch_agent(流式生成) → ⑤output_guard → END
 
-会话状态：MemorySaver 内存字典（Demo 不上 Redis/DB）。
-槽位分工：抽取/单轮missing=网关；缓存/合并/反问/注入Prompt=本后端。
+流式协议（graph.stream(stream_mode="custom")，非流式 invoke 下自动忽略）：
+  {"type":"meta", intent/route_kind/slots/missing_slots}   路由决策完成即推送
+  {"type":"delta","text":...}                               答案逐块推送
+  {"type":"replace","text":...}                             守卫兜底整段替换
+  {"type":"done", reply/guard}                              本轮结束
 """
 from __future__ import annotations
 
@@ -16,12 +19,28 @@ from typing import Annotated, Optional, TypedDict
 
 from langchain_core.messages import AnyMessage
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
 from . import agents, gateway, slots
-from .guard import SAFE_FALLBACK, guard
+from .guard import SAFE_FALLBACK, guard, stream_violation
 from .gateway import IntentResult, Slots
+
+INTENT_ZH = {
+    "QUESTION_SUBJECT": "学科问题", "QUESTION_POLICY": "政策咨询",
+    "REQUEST_STUDY_PLAN": "学习计划", "REQUEST_ERROR_ANALYSIS": "错题分析",
+    "CHAT_EMOTION": "情感倾诉", "REFUSE_CHEAT": "作弊拒绝",
+    "GENERAL_CHAT": "闲聊", "UNKNOWN": "未识别",
+}
+
+
+def _emit(event: dict) -> None:
+    """向流式消费方推送自定义事件；非流式(invoke)上下文为 no-op。"""
+    try:
+        get_stream_writer()(event)
+    except Exception:
+        pass
 
 
 class ChatState(TypedDict, total=False):
@@ -37,6 +56,23 @@ class ChatState(TypedDict, total=False):
     final_answer: Optional[str]
     guard_info: dict
     latency_ms: int
+
+
+def _meta_event(ir: IntentResult, merged: Slots, missing: list[str],
+                route_kind: str) -> dict:
+    return {
+        "type": "meta",
+        "intent": {
+            "primary_intent": ir.primary_intent.value,
+            "primary_intent_zh": INTENT_ZH.get(ir.primary_intent.value, "?"),
+            "secondary_intent": ir.secondary_intent.value if ir.secondary_intent else None,
+            "confidence": ir.confidence,
+            "need_guide_only": ir.need_guide_only,
+        },
+        "route_kind": route_kind,
+        "slots": {k: v for k, v in merged.model_dump().items() if v},
+        "missing_slots": missing,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -59,23 +95,25 @@ def slot_merge_and_router(state: ChatState) -> dict:
     merged = slots.merge_slots(ir, state.get("cached_slots"))
     missing = slots.still_missing(ir, merged)
 
-    if ir.primary_intent.value == "REFUSE_CHEAT" or ir.risk.cheat_risk:
-        return {"merged_slots": merged, "still_missing": missing,
-                "route_kind": "risk", "cached_slots": slots.cacheable(merged)}
-    if ir.risk.psych_risk == "high" and ir.reply:
+    if ir.primary_intent.value == "REFUSE_CHEAT" or ir.risk.cheat_risk or (
+            ir.risk.psych_risk == "high" and ir.reply):
+        _emit(_meta_event(ir, merged, missing, "risk"))
         return {"merged_slots": merged, "still_missing": missing,
                 "route_kind": "risk", "cached_slots": slots.cacheable(merged)}
 
-    if missing:  # 分支B：反问话术在本节点直接生成 → END
+    if missing:  # 分支B：反问话术直接生成并流式下发 → END
         questions = " ".join(
             slots.CLARIFY_QUESTIONS.get(f, f"请补充{f}") for f in missing
         )
         reply = f"好嘞，先确认一下：{questions}"
+        _emit(_meta_event(ir, merged, missing, "clarify"))
+        _emit({"type": "done", "reply": reply, "guard": {}})
         return {"merged_slots": merged, "still_missing": missing,
                 "route_kind": "clarify", "final_answer": reply,
                 "cached_slots": slots.cacheable(merged),
                 "messages": [{"role": "assistant", "content": reply}]}
 
+    _emit(_meta_event(ir, merged, [], "agent"))
     return {"merged_slots": merged, "still_missing": [],
             "route_kind": "agent", "cached_slots": slots.cacheable(merged)}
 
@@ -95,12 +133,13 @@ def route_after_merge(state: ChatState) -> str:
 def risk_reply_node(state: ChatState) -> dict:
     ir: IntentResult = state["intent_result"]
     reply = ir.reply or "这个忙帮不了哦～咱们聊聊学习吧。"
+    _emit({"type": "done", "reply": reply, "guard": {}})
     return {"final_answer": reply,
             "messages": [{"role": "assistant", "content": reply}]}
 
 
 # ---------------------------------------------------------------------------
-# 节点4：Agent 分发（合并后的完整槽位注入 Prompt，直接 LLM 生成，无RAG）
+# 节点4：Agent 分发（流式生成 + 增量守卫掐断）
 # ---------------------------------------------------------------------------
 def _history(state: ChatState) -> list[dict]:
     out = []
@@ -115,19 +154,42 @@ def dispatch_agent_node(state: ChatState) -> dict:
     ir: IntentResult = state["intent_result"]
     agent = agents.get_agent(ir.primary_intent.value)
     slot_dict = {k: v for k, v in state["merged_slots"].model_dump().items() if v}
+    history = _history(state)
+    guide_only = ir.need_guide_only
     t0 = time.perf_counter()
+
+    parts: list[str] = []
     try:
-        draft = agents.generate(agent, state["user_query"], slot_dict,
-                                _history(state))
-    except Exception as e:
-        print(f"[graph] Agent生成失败({e})")
-        draft = "哎呀，我这边开小差了，能再说一遍吗？"
+        for delta in agents.generate_stream(agent, state["user_query"],
+                                            slot_dict, history):
+            bad = stream_violation("".join(parts) + delta, need_guide_only=guide_only)
+            if bad:  # 增量守卫命中：立即掐断并替换
+                _emit({"type": "delta",
+                       "text": "\n\n⚠️ [守卫拦截] 以上内容已撤回，替换为：\n\n"})
+                _emit({"type": "replace", "text": SAFE_FALLBACK})
+                parts = [SAFE_FALLBACK]
+                break
+            parts.append(delta)
+            _emit({"type": "delta", "text": delta})
+    except Exception as e:  # 流式失败 → 非流式重试一次
+        print(f"[graph] 流式生成失败({e})，回退非流式")
+        try:
+            text = agents.generate(agent, state["user_query"], slot_dict, history)
+            _emit({"type": "replace", "text": text})
+            parts = [text]
+        except Exception as e2:
+            print(f"[graph] Agent生成失败({e2})")
+            text = "哎呀，我这边开小差了，能再说一遍吗？"
+            _emit({"type": "replace", "text": text})
+            parts = [text]
+
+    draft = "".join(parts).strip()
     print(f"[graph] {agent['name']} 生成 {time.perf_counter()-t0:.1f}s")
     return {"draft_answer": draft}
 
 
 # ---------------------------------------------------------------------------
-# 节点5：输出守卫（need_guide_only 防答疑泄答案 + 基础安全过滤）
+# 节点5：输出守卫（终检；罕见漏网时整段替换并通知前端）
 # ---------------------------------------------------------------------------
 def output_guard_node(state: ChatState) -> dict:
     ir: IntentResult = state["intent_result"]
@@ -150,7 +212,11 @@ def output_guard_node(state: ChatState) -> dict:
             verdict["actions"].append(f"重生成失败({e})，替换安全引导话术")
     elif not verdict["passed"]:
         text = SAFE_FALLBACK
+    if text != draft:
+        _emit({"type": "replace", "text": text})  # 整段替换已流出内容
 
+    _emit({"type": "done", "reply": text,
+           "guard": {"passed": verdict["passed"], "actions": verdict["actions"]}})
     return {"final_answer": text,
             "guard_info": {"passed": verdict["passed"],
                            "actions": verdict["actions"]},
@@ -186,4 +252,14 @@ def run_turn(session_id: str, user_query: str) -> dict:
         {"session_id": session_id, "user_query": user_query,
          "messages": [{"role": "user", "content": user_query}]},
         config={"configurable": {"thread_id": session_id}},
+    )
+
+
+def stream_turn(session_id: str, user_query: str):
+    """流式执行一轮对话，逐个 yield 自定义事件 dict（SSE 用）。"""
+    yield from chat_graph.stream(
+        {"session_id": session_id, "user_query": user_query,
+         "messages": [{"role": "user", "content": user_query}]},
+        config={"configurable": {"thread_id": session_id}},
+        stream_mode="custom",
     )

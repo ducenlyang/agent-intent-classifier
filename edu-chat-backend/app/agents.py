@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 
 from .config import HISTORY_WINDOW
-from .llm_client import chat_completion
+from .llm_client import chat_completion, chat_completion_stream
 
 AGENT_REGISTRY: dict[str, dict] = {
     "QUESTION_SUBJECT": {
@@ -108,6 +108,16 @@ def build_messages(agent: dict, user_query: str, slots: dict,
 def generate(agent: dict, user_query: str, slots: dict,
              history: list[dict], strict: bool = False) -> str:
     return chat_completion(
+        build_messages(agent, user_query, slots, history, strict),
+        temperature=agent.get("temperature", 0.6),
+        max_tokens=1200,
+    )
+
+
+def generate_stream(agent: dict, user_query: str, slots: dict,
+                    history: list[dict], strict: bool = False):
+    """流式生成，逐块 yield 文本增量（网页打字机效果）。"""
+    yield from chat_completion_stream(
         build_messages(agent, user_query, slots, history, strict),
         temperature=agent.get("temperature", 0.6),
         max_tokens=1200,

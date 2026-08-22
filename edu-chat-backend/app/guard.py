@@ -40,3 +40,15 @@ def guard(text: str, *, need_guide_only: bool = False) -> dict:
             return {"passed": False, "regenerate": True,
                     "actions": [f"脚手架泄露{leaks}，需严格模式重生成"]}
     return {"passed": True, "regenerate": False, "actions": []}
+
+
+def stream_violation(text_so_far: str, *, need_guide_only: bool = False) -> str | None:
+    """流式增量检查：累积文本命中违规词立即返回该词（用于中途掐断），否则 None。"""
+    for p in CHEAT_FACILITATION:
+        if p in text_so_far:
+            return p
+    if need_guide_only:
+        for p in ANSWER_LEAK_PATTERNS:
+            if p in text_so_far:
+                return p
+    return None

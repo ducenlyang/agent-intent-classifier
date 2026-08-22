@@ -1,9 +1,10 @@
-"""FastAPI 入口：聊天接口 + 静态页面托管。
+"""FastAPI 入口：聊天接口(含SSE流式) + 静态页面托管。
 
 启动: uvicorn app.main:app --port 8600  (项目根目录执行)
 """
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -11,13 +12,13 @@ from pathlib import Path
 
 import requests
 from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import gateway
 from .config import GATEWAY_URL
 from .gateway import IntentResult
-from .graph import run_turn
+from .graph import run_turn, stream_turn
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
@@ -101,6 +102,29 @@ def chat(req: ChatRequest) -> ChatResponse:
         missing_slots=state.get("still_missing") or [],
         guard=state.get("guard_info") or {},
         latency_ms=int((time.perf_counter() - t0) * 1000),
+    )
+
+
+@app.post("/api/chat/stream")
+def chat_stream(req: ChatRequest):
+    """SSE 流式聊天：meta(意图/路由/槽位) → delta(逐块答案) → done。
+    事件格式: data: {json}\n\n，终止帧: data: [DONE]"""
+    def gen():
+        got_done = False
+        try:
+            for event in stream_turn(req.session_id, req.query.strip()):
+                if event.get("type") == "done":
+                    got_done = True
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        except Exception as e:  # 图执行异常也以事件形式告知，不断连接
+            yield f'data: {json.dumps({"type": "error", "message": str(e)}, ensure_ascii=False)}\n\n'
+        if not got_done:
+            yield f'data: {json.dumps({"type": "done", "reply": "", "guard": {}}, ensure_ascii=False)}\n\n'
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        gen(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
