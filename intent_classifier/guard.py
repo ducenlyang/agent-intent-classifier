@@ -25,6 +25,14 @@ SAFE_FALLBACK = (
 )
 
 
+def stream_violation(text_so_far: str) -> str | None:
+    """流式过程的增量检查：命中违规词立即返回该词，否则 None。"""
+    for kw in CHEAT_FACILITATION:
+        if kw in text_so_far:
+            return kw
+    return None
+
+
 @dataclass
 class GuardVerdict:
     passed: bool = True

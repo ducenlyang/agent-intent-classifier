@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 
 from .config import PrimaryIntent
-from .llm_client import chat_completion
+from .llm_client import chat_completion, chat_completion_stream
 from .schemas import IntentResult
 
 
@@ -43,6 +43,14 @@ class Agent:
             max_tokens=self.max_tokens,
         )
         return text, int((time.perf_counter() - t0) * 1000)
+
+    def generate_stream(self, result: IntentResult):
+        """流式生成，逐块 yield 文本增量（打字机效果）。"""
+        yield from chat_completion_stream(
+            self.build_messages(result),
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+        )
 
 
 AGENTS: dict[PrimaryIntent, Agent] = {

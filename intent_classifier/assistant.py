@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from .agents import Agent
 from .config import GEN_MODEL
-from .guard import GuardVerdict, output_guard
+from .guard import GuardVerdict, SAFE_FALLBACK, output_guard, stream_violation
 from .intent_node import IntentPipeline
 from .router import RouteDecision, route
 from .schemas import IntentResult
@@ -37,7 +37,9 @@ class Assistant:
         self._pending: str | None = None  # 反问等待补充时的原 query
 
     # ------------------------------------------------------------------
-    def chat(self, user_input: str) -> AssistantTurn:
+    def chat(self, user_input: str, on_delta=None, on_route=None) -> AssistantTurn:
+        """on_delta(chunk): Agent 流式生成时的逐块回调（打字机效果）。
+        on_route(result, decision): 路由决策后的回调（打印意图头行/进度用）。"""
         t0 = time.perf_counter()
 
         # 反问补槽轮：把补充信息并入原 query 重新识别
@@ -49,6 +51,8 @@ class Assistant:
         decision: RouteDecision = route(result)
         gen_model = None
         guard_info: dict = {}
+        if on_route is not None:
+            on_route(result, decision)
 
         if decision.kind == "intercept":
             reply = decision.reply
@@ -56,7 +60,9 @@ class Assistant:
             reply = decision.reply
             self._pending = user_input  # 记录，下轮合并；仅追问一次，下轮必放行
         else:
-            reply, guard_info, gen_model = self._generate(decision.agent, result)
+            reply, guard_info, gen_model = self._generate(
+                decision.agent, result, on_delta
+            )
 
         return AssistantTurn(
             query=user_input,
@@ -70,8 +76,14 @@ class Assistant:
         )
 
     # ------------------------------------------------------------------
-    def _generate(self, agent: Agent, result: IntentResult) -> tuple[str, dict, str]:
-        """Agent 生成 + 输出守卫。生成失败降级为道歉+引导。"""
+    def _generate(self, agent: Agent, result: IntentResult,
+                  on_delta=None) -> tuple[str, dict, str]:
+        """Agent 生成 + 输出守卫。优先流式（增量守卫），失败自动回退非流式。"""
+        if on_delta is not None:
+            try:
+                return self._generate_stream(agent, result, on_delta)
+            except Exception as e:
+                print(f"\n[Assistant] 流式生成失败({e})，回退非流式")
         try:
             text, gen_ms = agent.generate(result)
             gen_model = GEN_MODEL
@@ -88,6 +100,40 @@ class Assistant:
             "actions": verdict.actions,
             "gen_ms": gen_ms,
         }, gen_model
+
+    def _generate_stream(self, agent: Agent, result: IntentResult,
+                         on_delta) -> tuple[str, dict, str]:
+        """流式生成：逐块下发 + 增量违规检查（命中立即掐断撤回）+ 完整守卫。"""
+        t0 = time.perf_counter()
+        parts: list[str] = []
+        aborted_kw: str | None = None
+        for delta in agent.generate_stream(result):
+            joined = "".join(parts) + delta
+            kw = stream_violation(joined)
+            if kw:  # 增量守卫命中：停止下发，撤回替换
+                aborted_kw = kw
+                break
+            parts.append(delta)
+            on_delta(delta)
+
+        gen_ms = int((time.perf_counter() - t0) * 1000)
+        if aborted_kw:
+            on_delta("\n\n⚠️ [守卫拦截] 以上内容已撤回，替换为安全回复：\n\n")
+            text = SAFE_FALLBACK
+            verdict = GuardVerdict(passed=False)
+            verdict.actions.append(f"流式增量检查命中'{aborted_kw}'，已掐断撤回")
+        else:
+            text = "".join(parts).strip()
+        safe_text, verdict_full = output_guard(text, result)
+        if verdict_full.actions:
+            # 完整守卫的补丁(如心理高危追加热线)需追加下发给用户
+            if len(safe_text) > len(text):
+                on_delta(safe_text[len(text):])
+        return safe_text, {
+            "passed": verdict.passed and verdict_full.passed,
+            "actions": verdict.actions + verdict_full.actions,
+            "gen_ms": gen_ms,
+        }, GEN_MODEL
 
 
 if __name__ == "__main__":

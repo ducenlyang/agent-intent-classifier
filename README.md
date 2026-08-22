@@ -130,7 +130,7 @@ cp config.example.json config.local.json
 
 不配置 Key 也能跑：L3 自动降级启发式（词典抽槽），只是槽位质量从 LLM 级降为词典级。
 
-### 演示效果（端到端对话 `chat_demo`）
+### 演示效果（端到端对话 `chat_demo`，Agent 回复为 SSE 流式逐字输出）
 
 ```text
 🧑 你 > 帮我制定一份寒假学习计划
