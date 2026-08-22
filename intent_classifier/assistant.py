@@ -124,6 +124,7 @@ class Assistant:
             verdict.actions.append(f"流式增量检查命中'{aborted_kw}'，已掐断撤回")
         else:
             text = "".join(parts).strip()
+            verdict = GuardVerdict()  # 正常流式完成：无增量违规
         safe_text, verdict_full = output_guard(text, result)
         if verdict_full.actions:
             # 完整守卫的补丁(如心理高危追加热线)需追加下发给用户
