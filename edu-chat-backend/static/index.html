@@ -43,6 +43,7 @@
   .row.assistant .bubble { background: #fff; border-top-left-radius: 3px;
                            box-shadow: 0 1px 3px rgba(0,0,0,.09); }
   .meta { font-size: 11px; color: #98a2b3; margin-top: 5px; padding-left: 2px; }
+  .meta:empty { display: none; }
   .meta b { color: #3b82f6; font-weight: 600; }
   /* ---------- AI 回复内的 Markdown 排版 ---------- */
   .row.assistant .bubble > :last-child { margin-bottom: 0; }
@@ -195,9 +196,9 @@ function addBubble(role, content, meta, scroll = true) {
   row.className = "row " + (role === "user" ? "user" : "assistant");
   const avatar = role === "user" ? "🧑" : "🤖";
   const body = role === "user" ? esc(content) : mdToHtml(content);
-  const metaHtml = meta ? `<div class="meta">${meta}</div>` : "";
+  // .meta 元素始终存在（流式路径会动态填充），无内容时 CSS 隐藏
   row.innerHTML = `<div class="avatar">${avatar}</div>
-    <div class="col"><div class="bubble">${body}</div>${metaHtml}</div>`;
+    <div class="col"><div class="bubble">${body}</div><div class="meta">${meta || ""}</div></div>`;
   $("chat-area").appendChild(row);
   if (scroll) $("chat-area").scrollTop = $("chat-area").scrollHeight;
   return row;
@@ -211,12 +212,6 @@ function addThinking() {
 }
 
 /* ---------- 发送（优先SSE流式，失败自动回退JSON整包） ---------- */
-function addStreamBubble() {
-  const row = addBubble("assistant", "");
-  row.querySelector(".bubble").innerHTML =
-    '<span class="thinking"><span></span><span></span><span></span></span>';
-  return row;
-}
 function renderStream(bubble, acc) {
   bubble.innerHTML = mdToHtml(acc);
   $("chat-area").scrollTop = $("chat-area").scrollHeight;
@@ -237,18 +232,18 @@ async function send() {
   s.messages.push({ role: "user", content: text });
   addBubble("user", text);
   const t0 = performance.now();
+  const tRow = addThinking();          // 发送即显示思考动画（流式meta到达前不空屏）
   let ok = false;
-  try     { ok = await sendStream(s, text, t0); }  // SSE 打字机
+  try     { ok = await sendStream(s, text, tRow, t0); }  // SSE 打字机
   catch (e) { console.warn("stream failed:", e); }
-  if (!ok) {                                        // 整包回退
-    const tRow = addThinking();
+  if (!ok) {                                             // 整包回退
     try     { ok = await sendJson(s, text, tRow, t0); }
     catch (e) { tRow.remove(); addBubble("assistant", "网络异常，请稍后重试 " + e); }
   }
   store.save(sessions); $("send").disabled = false; $("query").focus();
 }
 
-async function sendStream(s, text, t0) {
+async function sendStream(s, text, tRow, t0) {
   const resp = await fetch("/api/chat/stream", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ session_id: curSid, query: text }),
@@ -257,8 +252,16 @@ async function sendStream(s, text, t0) {
   const reader = resp.body.getReader(), dec = new TextDecoder();
   let buf = "", acc = "", row = null, bubble = null, metaEl = null,
       meta = null, doneEv = null, gotAny = false;
+  const ensureRow = () => {          // 首个事件到达：思考动画升级为正式气泡
+    if (row) return;
+    tRow.remove();
+    row = addBubble("assistant", "", " ");
+    bubble = row.querySelector(".bubble");
+    metaEl = row.querySelector(".meta");
+    metaEl.innerHTML = "识别中…";
+  };
   const finalize = () => {
-    if (!row) return;
+    if (!row) { tRow.remove(); return; }
     if (!acc && doneEv && doneEv.reply) { acc = doneEv.reply; renderStream(bubble, acc); }
     if (metaEl && meta) metaEl.innerHTML = metaText(meta, (performance.now() - t0) / 1000);
     s.messages.push({ role: "assistant", content: acc, meta: metaEl ? metaEl.innerHTML : "" });
@@ -278,18 +281,16 @@ async function sendStream(s, text, t0) {
       gotAny = true;
       if (ev.type === "meta") {          // 意图/路由/槽位 先行到达
         meta = ev;
-        row = row || addStreamBubble();
-        bubble = row.querySelector(".bubble");
-        metaEl = row.querySelector(".meta");
+        ensureRow();
         metaEl.innerHTML = metaText(meta, null) + " · ⏳ 生成中…";
       } else if (ev.type === "delta") {  // 答案逐块打出
-        row = row || addStreamBubble();
-        bubble = row.querySelector(".bubble");
+        ensureRow();
         acc += ev.text;
         renderStream(bubble, acc);
       } else if (ev.type === "replace") {// 守卫整段替换
+        ensureRow();
         acc = ev.text;
-        if (bubble) renderStream(bubble, acc);
+        renderStream(bubble, acc);
       } else if (ev.type === "done") {
         doneEv = ev;
       } else if (ev.type === "error") {
