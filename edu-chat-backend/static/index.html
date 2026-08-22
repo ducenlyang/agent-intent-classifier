@@ -3,7 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>教育助手 · 对话Demo</title>
+  <title>教育助手 · 对话Demo</title>
+  <link rel="stylesheet" href="/katex/katex.min.css">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: "Segoe UI", "Microsoft YaHei", sans-serif; height: 100vh;
@@ -99,6 +100,7 @@
     </div>
   </div>
 
+<script src="/katex/katex.min.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 
@@ -125,7 +127,11 @@ const toSup = t => [...t].map(c => SUP_MAP[c] ?? c).join("");
 const toSub = t => [...t].map(c => SUB_MAP[c] ?? c).join("");
 
 function latexToText(s) {
-  s = s.replace(/\\text\{([^{}]*)\}/g, "$1")            // \text{或} → 或
+  s = s.replace(/\\begin\{(?:bmatrix|pmatrix|vmatrix|Bmatrix|matrix|cases|aligned|array|gathered)\}/g, "")
+       .replace(/\\end\{(?:bmatrix|pmatrix|vmatrix|Bmatrix|matrix|cases|aligned|array|gathered)\}/g, "")
+       .replace(/\\begin\{[a-zA-Z*]+\}/g, "").replace(/\\end\{[a-zA-Z*]+\}/g, "")
+       .replace(/&/g, "  ").replace(/\\\\/g, "; ")          // 矩阵列分隔/换行
+       .replace(/\\text\{([^{}]*)\}/g, "$1")            // \text{或} → 或
        .replace(/\\d?frac\{([^{}]+)\}\{([^{}]+)\}/g, "($1)/($2)")  // \frac{a}{b}
        .replace(/\\sqrt\{([^{}]+)\}/g, "√($1)");         // \sqrt{x}
   const keys = Object.keys(LATEX_SYMBOLS).sort((a, b) => b.length - a.length);
@@ -144,16 +150,26 @@ function inline(t) {
 }
 
 function mdToHtml(src) {
-  // 第一步：先抽取公式（支持跨行 \[...\] 块），替换为占位符，避免被逐行处理拆散
+  // 第一步：先抽取公式，替换为占位符，避免被逐行处理拆散。
+  // KaTeX 可用 → 真渲染(矩阵/对齐/cases全覆盖)；不可用 → Unicode 转换兜底
   const maths = [];
   const PH = i => `\u0000M${i}\u0000`;
+  const render = (raw, displayMode) => {
+    const tex = raw.trim();
+    if (window.katex && window.katex.renderToString) {
+      try {
+        return window.katex.renderToString(tex, { displayMode, throwOnError: false });
+      } catch (e) { /* 落入兜底 */ }
+    }
+    return `<span class="math">${latexToText(esc(tex))}</span>`;
+  };
   let s = src || "";
-  s = s.replace(/\\\[([\s\S]*?)\\\]/g, (_, m) => {
-    maths.push(`<span class="math">${latexToText(esc(m).trim())}</span>`); return PH(maths.length - 1);
-  });
-  s = s.replace(/\\\(([\s\S]*?)\\\)/g, (_, m) => {
-    maths.push(`<span class="math">${latexToText(esc(m).trim())}</span>`); return PH(maths.length - 1);
-  });
+  s = s.replace(/\\\[([\s\S]*?)\\\]/g, (_, m) => (maths.push(render(m, true)),  PH(maths.length - 1)));
+  s = s.replace(/\$\$([\s\S]*?)\$\$/g,       (_, m) => (maths.push(render(m, true)),  PH(maths.length - 1)));
+  s = s.replace(/\\\(([\s\S]*?)\\\)/g, (_, m) => (maths.push(render(m, false)), PH(maths.length - 1)));
+  s = s.replace(/\$([^$\n]{1,120}?)\$/g, (whole, m) =>
+    /[\u4e00-\u9fff]/.test(m) ? whole  // 含中文按普通文本(防金额误判)
+      : (maths.push(render(m, false)), PH(maths.length - 1)));
   s = s.replace(/\\[\\()\]]/g, "");   // 清理残留的孤立定界符
 
   // 第二步：逐行 Markdown 处理（占位符原样保留）

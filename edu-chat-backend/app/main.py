@@ -13,6 +13,7 @@ from pathlib import Path
 import requests
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import gateway
@@ -131,3 +132,7 @@ def chat_stream(req: ChatRequest):
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
+
+
+# 本地自托管 KaTeX（公式渲染，运行时零外网依赖）
+app.mount("/katex", StaticFiles(directory=STATIC_DIR / "katex"), name="katex")
