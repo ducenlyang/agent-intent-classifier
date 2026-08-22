@@ -1,8 +1,7 @@
-"""第二层：联合多任务小模型推理（意图分类头 + BIO 槽位标注头）。
+"""第二层：小模型推理——仅输出【一级意图 + 置信度】，不做槽位抽取。
 
-输出：intent / intent_confidence / bert_short_slots(subject,grade 含置信度)。
-长槽位(topic/emotion/time...)不在本层职责内，由第三层抽取。
-加载 ckpt/student_joint.pt；不存在则报错并提示先训练。
+复用联合训练的 ckpt（意图头即独立训练产物，BIO头推理时休眠），无需重训。
+全部槽位由第三层 LLM 抽取（分层职责分离）。
 """
 from __future__ import annotations
 
@@ -19,7 +18,7 @@ from .config import (
     PrimaryIntent,
     STUDENT_JOINT_CKPT,
 )
-from .joint_model import JointIntentSlotModel, decode_slots
+from .joint_model import JointIntentSlotModel
 from .model_hub import AutoTokenizer, student_model_name
 
 with open(LABEL_MAP_PATH, "r", encoding="utf-8") as f:
@@ -31,14 +30,13 @@ LABEL2ID = {v: int(k) for k, v in LABEL_MAP.items()}
 class SmallModelOutput(BaseModel):
     intent: PrimaryIntent
     intent_confidence: float
-    bert_short_slots: dict[str, dict] = {}  # {"subject": {"value":..,"confidence":..}}
 
 
 class SmallClassifier:
     def __init__(self, ckpt_path=None):
         if not STUDENT_JOINT_CKPT.exists():
             raise FileNotFoundError(
-                f"未找到联合模型权重 {STUDENT_JOINT_CKPT}，请先运行:\n"
+                f"未找到小模型权重 {STUDENT_JOINT_CKPT}，请先运行:\n"
                 f"  python -m intent_classifier.distill_train.train_student_joint"
             )
         self.device = torch.device("cpu")  # 生产定位：CPU 离线部署
@@ -53,21 +51,14 @@ class SmallClassifier:
     @torch.no_grad()
     def predict(self, query: str) -> tuple[SmallModelOutput, int]:
         t0 = time.perf_counter()
-        enc = self.tokenizer(
-            query, truncation=True, max_length=MAX_LEN,
-            return_tensors="pt", return_offsets_mapping=True,
-        )
-        offsets = enc.pop("offset_mapping")[0].tolist()
-        intent_logits, bio_logits = self.model(
-            enc["input_ids"], enc["attention_mask"]
-        )
+        enc = self.tokenizer(query, truncation=True, max_length=MAX_LEN,
+                             return_tensors="pt")
+        intent_logits, _ = self.model(enc["input_ids"], enc["attention_mask"])
         probs = torch.softmax(intent_logits, dim=-1)
         conf, pred_id = torch.max(probs, dim=-1)
-        short_slots = decode_slots(bio_logits[0], offsets, query)
         out = SmallModelOutput(
             intent=PrimaryIntent(ID2LABEL[int(pred_id.item())]),
             intent_confidence=round(float(conf.item()), 4),
-            bert_short_slots=short_slots,
         )
         return out, int((time.perf_counter() - t0) * 1000)
 

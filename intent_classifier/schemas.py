@@ -33,17 +33,17 @@ class IntentResult(BaseModel):
     primary_intent: PrimaryIntent
     secondary_intent: Optional[SecondaryIntent] = None
     confidence: float = 1.0
-    handled_by: Literal["RULE", "SMALL_MODEL", "LLM_REFINE", "LLM_FALLBACK"]
+    handled_by: Literal["RULE", "LLM_REFINE", "LLM_FALLBACK"]
     slots: Slots = Field(default_factory=Slots)
-    slot_confidence: dict[str, float] = Field(
-        default_factory=dict, description="BIO头输出的短槽位置信度 {slot: conf}"
-    )
     missing_slots: list[str] = Field(
         default_factory=list, description="必填槽位缺失项，供下游Agent追问"
     )
     risk: RiskFlag = Field(default_factory=RiskFlag)
     latency_ms: int = 0
     decision_trace: list[str] = Field(default_factory=list)  # 各层决策路径，便于排查
+    reply: Optional[str] = Field(
+        None, description="可直接下发的回复话术（L1拦截时填充拒绝/安抚话术）"
+    )
     reply_hint: Optional[str] = Field(
-        None, description="给下游回复器的提示，如心理高危需暖心话术+人工介入"
+        None, description="给下游回复器的运营提示（非直接话术）"
     )

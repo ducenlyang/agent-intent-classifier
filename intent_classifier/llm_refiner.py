@@ -1,10 +1,9 @@
-"""第三层：LLM 终审 + 完整槽位抽取 + 必填槽位校验。
+"""第三层：LLM 精判层——复核意图 + 抽取全部槽位 + 必填校验。
 
-输入：原始 query + rule_hint_slots(L1) + bert_short_slots(L2)
-任务：①复核上层意图 ②终审 subject/grade 短槽位 ③抽取长开放槽位
-     (question_text/knowledge_points/topic/emotion/time_horizon)
-     ④必填槽位校验生成 missing_slots
-未配置 INTENT_LLM_API_KEY 或调用失败时，自动降级为启发式精判，流水线不中断。
+线性流水线：所有未被 L1 拦截的请求都会经过本层（L2 结果只作意图候选参考）。
+任务：①复核 L2 意图候选 ②抽取全部槽位 subject/grade/question_text/
+     knowledge_points/topic/emotion/time_horizon ③必填槽位校验 missing_slots
+未配置 INTENT_LLM_API_KEY 或调用失败时，自动降级为启发式精判（词典槽位），不中断。
 """
 from __future__ import annotations
 
@@ -19,7 +18,6 @@ from .config import (
     LLM_MODEL,
     LLM_TIMEOUT,
     REQUIRED_SLOTS,
-    SLOT_CONF_HIGH,
     PrimaryIntent,
     SecondaryIntent,
 )
@@ -34,7 +32,7 @@ from .slot_lexicon import (
     extract_lexicon_slots,
 )
 
-_SYSTEM_PROMPT = """你是一个教育助手的意图识别终审引擎。上游小模型给出候选判断，你负责终审与槽位抽取。
+_SYSTEM_PROMPT = """你是一个教育助手的意图识别引擎。上游小模型给出意图候选，你负责终审并抽取全部槽位。
 
 一级意图(只能选一个):
 - QUESTION_SUBJECT: 学科知识提问(概念/题目求解)
@@ -50,13 +48,17 @@ _SYSTEM_PROMPT = """你是一个教育助手的意图识别终审引擎。上游
 SCHEDULE_PLANNING, GRADE_IMPROVE, MISTAKE_DIAGNOSIS, PAPER_ANALYSIS,
 EMOTION_VENT, EMOTION_CRISIS, SMALL_TALK, INFO_SEEK, UNCLEAR
 
-你的任务:
-1.复核上游意图，错误就修正(上游候选仅供参考)
-2.终审 subject(学科)/grade(年级) 短槽位，上游值错误就纠正，没有就置null
-3.抽取长开放槽位: question_text(题目/问题原文，仅学科提问时非空)、
-   knowledge_points(知识点列表)、topic(高考/中考等)、emotion(情绪词)、time_horizon(时间范围)
-4.必填槽位校验: QUESTION_SUBJECT必填subject；REQUEST_STUDY_PLAN必填subject+grade；
-   REQUEST_ERROR_ANALYSIS必填subject。缺失的填入 missing_slots 数组
+槽位说明:
+- subject: 学科(数学/语文/英语/物理/化学/生物/历史/地理/政治等)
+- grade: 年级(高一~高三/初一~初三/小学/大学年级等)
+- question_text: 题目/问题原文(仅学科提问时有)
+- knowledge_points: 涉及知识点列表
+- topic: 考试/场景主题(高考/中考/月考/期末等)
+- emotion: 情绪词(焦虑/压力/低落等)
+- time_horizon: 时间范围(90天/寒假/一个月等)
+
+必填槽位规则: QUESTION_SUBJECT必填subject；REQUEST_STUDY_PLAN必填subject+grade；
+REQUEST_ERROR_ANALYSIS必填subject。缺失的字段名填入 missing_slots。
 
 只输出 JSON,不要任何解释,格式:
 {"primary_intent":"...","secondary_intent":"...","confidence":0.0,
@@ -119,12 +121,13 @@ def _validate(raw: dict, query: str, layer2: dict) -> dict:
 
 class LLMRefiner:
     def __init__(self, api_key: str | None = None):
-        self.api_key = (api_key or LLM_API_KEY).strip()
+        # None=取配置；显式传空串=强制禁用LLM（离线/评估省配额场景）
+        self.api_key = (LLM_API_KEY if api_key is None else api_key).strip()
         self.available = bool(self.api_key)
 
     # ------------------------------------------------------------------
     def refine(self, query: str, layer2: dict) -> tuple[IntentResult, int]:
-        """layer2: {"intent","confidence","rule_hint_slots","bert_short_slots"}"""
+        """layer2: {"intent": PrimaryIntent, "confidence": float}"""
         t0 = time.perf_counter()
         if self.available:
             try:
@@ -144,11 +147,9 @@ class LLMRefiner:
 
         user_msg = (
             f"用户输入: {query}\n"
-            f"上游意图候选: {getattr(layer2.get('intent'), 'value', layer2.get('intent'))}"
+            f"上游小模型意图候选: {getattr(layer2.get('intent'), 'value', layer2.get('intent'))}"
             f" (置信度{layer2.get('confidence')})\n"
-            f"规则层提示槽位: {json.dumps(layer2.get('rule_hint_slots', {}), ensure_ascii=False)}\n"
-            f"小模型BIO槽位: {json.dumps(layer2.get('bert_short_slots', {}), ensure_ascii=False)}\n"
-            f"请终审并抽取全部槽位。"
+            f"请终审意图并抽取全部槽位。"
         )
         resp = requests.post(
             f"{LLM_BASE_URL.rstrip('/')}/chat/completions",
@@ -173,7 +174,7 @@ class LLMRefiner:
         return json.loads(m.group(0))
 
     def _heuristic_refine(self, query: str, layer2: dict) -> dict:
-        """无 API Key 时的离线终审：证据词校验 + 候选/词典槽位合并。"""
+        """无 API Key 时的离线精判：证据词校验 + 词典全量槽位抽取。"""
         primary: PrimaryIntent = layer2.get("intent") or PrimaryIntent.UNKNOWN
         conf: float = layer2.get("confidence", 0.5)
 
@@ -190,21 +191,10 @@ class LLMRefiner:
             primary = PrimaryIntent.UNKNOWN  # 域外安全出口
             conf = min(conf, 0.5)
 
-        # 短槽位终审：BIO高置信 > 规则提示 > 词典兜底
-        hints = layer2.get("rule_hint_slots") or {}
-        bert = layer2.get("bert_short_slots") or {}
         lex = extract_lexicon_slots(query)
-        short: dict[str, str | None] = {}
-        for f in ("subject", "grade"):
-            cand = bert.get(f)
-            if cand and cand.get("confidence", 0) >= SLOT_CONF_HIGH:
-                short[f] = cand["value"]
-            else:
-                short[f] = hints.get(f) or lex.get(f)
-
         question_text = query if primary is PrimaryIntent.QUESTION_SUBJECT else None
         slots = Slots(
-            subject=short["subject"], grade=short["grade"],
+            subject=lex["subject"], grade=lex["grade"],
             question_text=question_text, topic=lex["topic"],
             emotion=lex["emotion"], time_horizon=lex["time_horizon"],
         )
@@ -242,7 +232,7 @@ class LLMRefiner:
             missing_slots=missing,
             risk=parsed["risk"],
             decision_trace=[
-                f"上游: {layer2.get('intent')} conf={layer2.get('confidence')}",
+                f"小模型候选: {layer2.get('intent')} conf={layer2.get('confidence')}",
                 f"{'LLM终审' if handled_by == 'LLM_REFINE' else '启发式终审'}: "
                 f"{parsed['primary'].value}",
             ],

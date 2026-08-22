@@ -1,18 +1,16 @@
-"""第一层：规则引擎（硬拦截 + 词典提示槽）。
+"""第一层：规则引擎（风险拦截，命中直接返回拒绝话术结束链路）。
 
-作弊类关键词 → REFUSE_CHEAT；心理高危关键词 → CHAT_EMOTION + psych_risk。
-命中直接返回 IntentResult；未命中放行进入第二层。
-同时提供 rule_hint_slots：词典捞取 subject/grade 提示槽位（供 L2 合并、L3 终审）。
+作弊关键词 → REFUSE_CHEAT + 拒绝话术；心理高危关键词 → CHAT_EMOTION + 安抚话术。
+未命中 → 放行进入第二层。
 """
 from __future__ import annotations
 
 import time
 
 from .config import PrimaryIntent, SecondaryIntent
-from .schemas import IntentResult, RiskFlag, Slots
-from .slot_lexicon import rule_hint_slots as _rule_hint_slots
+from .schemas import IntentResult, RiskFlag
 
-# 作弊类关键词：直接判 REFUSE_CHEAT（下游回复器负责礼貌拒绝+引导）
+# 作弊类关键词：直接判 REFUSE_CHEAT
 CHEAT_KEYWORDS: list[str] = [
     "作弊", "代考", "代写", "替考", "枪手", "买答案", "卖答案", "求答案",
     "泄题", "漏题", "押题答案", "试题答案", "考试答案", "真题答案", "答案发我",
@@ -28,10 +26,18 @@ PSYCH_HIGH_KEYWORDS: list[str] = [
     "跳楼", "没有意义活着", "活着没意思", "消失了算了",
 ]
 
-# 中危情感词：仅在进入 LLM 精判时提示（不在第一层拦截）
-PSYCH_LOW_KEYWORDS: list[str] = [
-    "压力大", "崩溃", "绝望", "压抑", "失眠", "焦虑", "自我怀疑",
-]
+# L1 直接返回的话术（可直接下发给用户）
+CHEAT_REPLY = (
+    "这个忙帮不了哦～作弊一旦被发现，轻则成绩作废，重则记入诚信档案，"
+    "影响升学太不划算了。与其冒这个险，不如告诉我你在备考哪一科、"
+    "哪块最没底，我帮你安排突击计划，稳稳提分更踏实。"
+)
+PSYCH_REPLY = (
+    "听到你这么说，我很担心你，也很谢谢你愿意讲出来。你能说出来就已经很勇敢了。"
+    "现在先慢慢做三次深呼吸，让自己缓一缓。如果这种难受一直压着你，"
+    "请一定拨打心理援助热线 12356（24小时），或把心里的话告诉信任的家人、老师。"
+    "我也可以一直在这里陪你聊聊，你想说什么都可以。"
+)
 
 
 def _matched(text: str, keywords: list[str]) -> list[str]:
@@ -41,13 +47,8 @@ def _matched(text: str, keywords: list[str]) -> list[str]:
 class RuleEngine:
     """无状态关键词拦截器。"""
 
-    def hint_slots(self, query: str) -> dict[str, str]:
-        """L1 词典提示槽位（{"subject": .., "grade": ..}，可能为 None）。"""
-        return _rule_hint_slots(query)
-
     def check(self, query: str) -> IntentResult | None:
         t0 = time.perf_counter()
-        hints = self.hint_slots(query)  # 拦截结果也附带提示槽位，供下游参考
 
         hit_cheat = _matched(query, CHEAT_KEYWORDS)
         if hit_cheat:
@@ -57,10 +58,10 @@ class RuleEngine:
                 secondary_intent=SecondaryIntent.UNCLEAR,
                 confidence=1.0,
                 handled_by="RULE",
-                slots=Slots(subject=hints["subject"], grade=hints["grade"]),
                 risk=RiskFlag(cheat_risk=True, matched_keywords=hit_cheat),
                 latency_ms=int((time.perf_counter() - t0) * 1000),
-                decision_trace=[f"规则层命中作弊关键词: {hit_cheat}"],
+                decision_trace=[f"规则层命中作弊关键词: {hit_cheat}，直接返回拒绝话术"],
+                reply=CHEAT_REPLY,
                 reply_hint="礼貌拒绝作弊请求，引导到正当备考方式",
             )
 
@@ -72,11 +73,11 @@ class RuleEngine:
                 secondary_intent=SecondaryIntent.EMOTION_CRISIS,
                 confidence=1.0,
                 handled_by="RULE",
-                slots=Slots(subject=hints["subject"], grade=hints["grade"]),
                 risk=RiskFlag(psych_risk="high", matched_keywords=hit_psych),
                 latency_ms=int((time.perf_counter() - t0) * 1000),
-                decision_trace=[f"规则层命中心理高危关键词: {hit_psych}"],
-                reply_hint="高危！先暖心安抚，提示心理援助热线(12356)，必要时人工介入",
+                decision_trace=[f"规则层命中心理高危关键词: {hit_psych}，直接返回安抚话术"],
+                reply=PSYCH_REPLY,
+                reply_hint="高危！已下发安抚话术+热线12356，建议记录并视情况人工介入",
             )
 
         return None  # 放行进入第二层

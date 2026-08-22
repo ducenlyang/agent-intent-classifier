@@ -105,11 +105,6 @@ NUM_LABELS = len(PrimaryIntent)  # 8
 MAX_LEN = 64
 
 # ---------------------------------------------------------------------------
-# 分层阈值
-# ---------------------------------------------------------------------------
-CONFIDENCE_HIGH = 0.85  # 第二层意图置信度 ≥ 该值直接输出，跳过第三层
-SLOT_CONF_HIGH = 0.80   # 已检测到的短槽位(subject/grade)置信度须 ≥ 该值才放行
-
 # 必填槽位校验（行业槽位填充做法：缺失槽位由下游 Agent 追问补全）
 REQUIRED_SLOTS: dict[PrimaryIntent, list[str]] = {
     PrimaryIntent.QUESTION_SUBJECT: ["subject"],         # 讲题要知道讲哪科
