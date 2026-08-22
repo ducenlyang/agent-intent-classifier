@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 训练产物（约1.1GB，通过训练脚本重新生成）
+intent_classifier/ckpt/
+
+# 生成的数据集（通过 gen_data.py 重新生成）
+intent_classifier/data/
+
+# IDE / 系统
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# HuggingFace 缓存
+.cache/
