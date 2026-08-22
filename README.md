@@ -9,36 +9,48 @@
 
 ## 架构
 
-```
-用户输入
-    ↓
-L1 规则引擎 rule_engine
-    风险拦截(作弊/心理高危)，命中直接返回拒绝/安抚话术结束链路(0ms)
-    ↓
-L2 tiny-bert：仅输出意图+置信度（作为候选，~20ms）
-    ↓
-L3 LLM 精判层
-    复核意图(错就修正) + 抽取全部槽位
-    subject / grade / question_text / knowledge_points / topic / emotion / time_horizon
-    + 必填槽位校验 → missing_slots（下游 Agent 追问）
-    （无 Key 或调用失败时自动降级启发式词典抽槽，流水线不中断）
-    ↓
-输出权威结果：IntentResult
-    ↓
-路由分发 Router
-    ├─ 风险拦截分支 → 直接返回拒绝/安抚话术，结束
-    ├─ missing_slots 非空 → 反问用户补齐信息，结束本轮(补充后自动合并重识别)
-    └─ 槽位齐全 → 分发到对应业务 Agent
-            ├─ 学科答疑Agent  ├─ 错题分析Agent  ├─ 学习规划Agent
-            ├─ 政策咨询Agent  ├─ 情绪聊天Agent  └─ 闲聊Agent(含UNKNOWN兜底)
-                    ↓
-每个 Agent 组装专属系统 Prompt + 传入槽位参数
-                    ↓
-调用生成大模型直接输出答案
-                    ↓
-输出守卫校验层（空输出/作弊协助话术拦截/心理高危话术兜底）
-                    ↓
-返回结果给用户
+```mermaid
+flowchart TD
+    U(["👤 用户输入"]):::out --> L1["🛡️ L1 · 规则引擎<br/>作弊 / 心理高危关键词拦截"]:::risk
+
+    L1 -- "命中 · 0ms" --> R1["🚫 直接返回拒绝 / 安抚话术<br/>结束链路"]:::risk
+    L1 -- "放行" --> L2["⚡ L2 · tiny-bert 小模型<br/>hfl/rbt3 · 38M · CPU ~20ms<br/>仅输出：意图 + 置信度（候选）"]:::model
+
+    L2 --> L3["🧠 L3 · LLM 精判 Deepseek-v4-flash<br/>复核意图（错就修正）<br/>抽取全部槽位 subject / grade /<br/>question_text / knowledge_points /…<br/>必填校验 → missing_slots<br/>⚠️ 无Key或超时自动降级启发式"]:::llm
+
+    L3 --> IR[("IntentResult<br/>权威结果")]:::out
+    IR --> RT{{"🔀 路由分发 Router"}}:::router
+
+    RT -- "风险拦截" --> R2["直接返回话术"]:::risk
+    RT -- "missing_slots 非空" --> CQ["❓ 反问补齐 · 结束本轮<br/>用户补充后自动合并重识别"]:::router
+    RT -- "槽位齐全" --> AG
+
+    subgraph AG["🤖 六大业务 Agent · 专属 Prompt + 槽位参数"]
+        direction LR
+        A1["📐 学科答疑"]:::agent
+        A2["🔍 错题分析"]:::agent
+        A3["📅 学习规划"]:::agent
+        A4["📜 政策咨询"]:::agent
+        A5["💚 情绪聊天"]:::agent
+        A6["🎈 闲聊 / 兜底"]:::agent
+    end
+
+    AG --> GEN["✍️ 生成大模型<br/>按 Agent 专属 Prompt 作答"]:::llm
+    GEN --> GD{{"🛡️ 输出守卫 Guard<br/>空输出 · 作弊话术拦截 · 心理兜底"}}:::guard
+    GD -- "通过" --> OUT(["✅ 返回用户"]):::out
+    GD -- "拦截" --> SAFE["替换安全兜底话术"]:::guard
+    SAFE --> OUT
+    R1 --> OUT
+    R2 --> OUT
+    CQ --> OUT
+
+    classDef risk fill:#ffe6e6,stroke:#d64545,color:#7f1d1d
+    classDef model fill:#e6f0ff,stroke:#3b82f6,color:#1e3a8a
+    classDef llm fill:#f3e8ff,stroke:#8b5cf6,color:#4c1d95
+    classDef router fill:#fff3e0,stroke:#f59e0b,color:#78350f
+    classDef agent fill:#e8faf0,stroke:#22c55e,color:#14532d
+    classDef guard fill:#fef9c3,stroke:#eab308,color:#713f12
+    classDef out fill:#f1f5f9,stroke:#64748b,color:#1e293b
 ```
 
 **职责分离**：L1 管"不能答的"（风险零延迟拦截+话术），L2 管"便宜的第一判断"，L3 管"最终的权威判断+全部结构化槽位"，Router+Agent 管"答得好"，Guard 管"答得安全"。LLM 可用则每条请求获得全量槽位；离线时启发式兜底仍可运行。
