@@ -1,9 +1,9 @@
-"""三层线性流水线编排：
+"""三层线性流水线编排（网关定位：无状态，单次只处理当前一句）：
 
 L1 规则引擎：风险拦截(作弊/心理高危)，命中直接返回拒绝/安抚话术结束链路
 L2 tiny-bert：仅输出意图+置信度（作为候选）
-L3 LLM精判：复核意图 + 抽取全部槽位 subject/grade/question_text/... + 必填校验
-   （无 LLM Key 时自动降级启发式，词典抽槽，流水线不中断）
+L3 LLM精判：复核意图 + 抽取全部槽位 + 单轮必填校验(missing_slots)
+多轮槽位缓存/合并是下游对话后端的职责，网关不保存任何会话状态。
 """
 from __future__ import annotations
 
@@ -39,6 +39,8 @@ class IntentPipeline:
         return self._small
 
     def classify(self, query: str) -> IntentResult:
+        """无状态单句识别：返回本句的意图+槽位+单轮 missing_slots。
+        多轮缓存合并由下游对话后端完成。"""
         query = (query or "").strip()
         if not query:
             return IntentResult(
@@ -72,6 +74,11 @@ class IntentPipeline:
             f"LLM精判({llm_ms}ms)" if refined.handled_by == "LLM_REFINE"
             else f"启发式精判({llm_ms}ms)"
         ] + refined.decision_trace[1:]
+
+        # 答疑场景要求引导式作答，守卫据此防完整答案泄露
+        refined.need_guide_only = (
+            refined.primary_intent is PrimaryIntent.QUESTION_SUBJECT
+        )
         return refined
 
 

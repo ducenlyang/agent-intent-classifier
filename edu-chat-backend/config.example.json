@@ -1,0 +1,8 @@
+{
+  "llm": {
+    "api_key": "在此填入你的API Key",
+    "base_url": "https://chatapi.weixin.qq.com/openai/v1",
+    "model": "Deepseek-v4-flash",
+    "timeout": 60
+  }
+}

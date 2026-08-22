@@ -40,6 +40,10 @@ class IntentResult(BaseModel):
     )
     risk: RiskFlag = Field(default_factory=RiskFlag)
     latency_ms: int = 0
+    need_guide_only: bool = Field(
+        False, description="答疑场景(QUESTION_SUBJECT)为True：要求引导式作答，"
+                           "输出守卫据此拦截完整答案泄露"
+    )
     decision_trace: list[str] = Field(default_factory=list)  # 各层决策路径，便于排查
     reply: Optional[str] = Field(
         None, description="可直接下发的回复话术（L1拦截时填充拒绝/安抚话术）"

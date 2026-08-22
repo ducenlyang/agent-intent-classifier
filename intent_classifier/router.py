@@ -16,6 +16,7 @@ from .schemas import IntentResult
 CLARIFY_QUESTIONS: dict[str, str] = {
     "subject": "想让我帮你重点抓哪一科呢？（数学/语文/英语/物理/化学…）",
     "grade": "方便说下现在读几年级吗？（比如初三、高一、高三）",
+    "question_text": "请把题目发给我（题目文字直接打出来就行）～",
     "time_horizon": "你想规划多长时间？（比如寒假、一个月、90天）",
 }
 

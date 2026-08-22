@@ -107,11 +107,12 @@ MAX_LEN = 64
 # ---------------------------------------------------------------------------
 # 必填槽位校验（行业槽位填充做法：缺失槽位由下游 Agent 追问补全）
 REQUIRED_SLOTS: dict[PrimaryIntent, list[str]] = {
-    PrimaryIntent.QUESTION_SUBJECT: ["subject"],         # 讲题要知道讲哪科
-    PrimaryIntent.REQUEST_STUDY_PLAN: ["subject", "grade"],  # 排计划要学科+年级
-    PrimaryIntent.REQUEST_ERROR_ANALYSIS: ["subject"],   # 分析错题要知道哪科
+    PrimaryIntent.QUESTION_SUBJECT: ["subject", "question_text"],  # 答疑须拿到题目原文
+    PrimaryIntent.REQUEST_STUDY_PLAN: ["subject", "grade"],        # 排计划要学科+年级
+    PrimaryIntent.REQUEST_ERROR_ANALYSIS: ["subject"],             # 分析错题要知道哪科
     # QUESTION_POLICY / CHAT_EMOTION / REFUSE_CHEAT / GENERAL_CHAT / UNKNOWN 无必填
 }
+# 多轮槽位缓存(CACHEABLE_FIELDS)是对话后端的概念，网关无状态不定义
 
 # ---------------------------------------------------------------------------
 # 第三层 LLM 兜底（OpenAI 兼容接口；未配置时自动降级为启发式精判）

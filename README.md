@@ -1,11 +1,79 @@
-# 教育助手意图识别 + Agent 路由系统
+# 教育助手解决方案（monorepo：意图网关 + 对话后端）
 
-> 生产级教育 NLU 全链路：**三层意图识别（规则拦截 → tiny-bert 候选 → LLM 终审+槽位）→ Router 路由 → 六大业务 Agent（专属 Prompt+槽位）→ 生成大模型 → 输出守卫 → 回复用户**，CPU 即可运行，师生蒸馏训练全流程齐备。
+> 一个仓库、两个项目、一键启动的端到端教育助手：
+> **① `intent_classifier/` — NLU 意图网关**（三层识别：规则拦截 → tiny-bert 候选 → LLM 终审+槽位，无状态 HTTP 服务）
+> **② `edu-chat-backend/` — 对话编排后端**（FastAPI + LangGraph：多轮槽位记忆 → 路由 → 六大业务 Agent → 输出守卫 → 网页聊天 Demo）
+> CPU 即可运行，师生蒸馏训练全流程齐备。
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.x-ee4c2c)
 ![Transformers](https://img.shields.io/badge/Transformers-4.x%2B%2F5.x-ffd21e)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.11x-009485)
+![LangGraph](https://img.shields.io/badge/LangGraph-workflow-1c3c3c)
 ![CPU](https://img.shields.io/badge/inference-CPU-informational)
+
+## 一键启动
+
+```bash
+# 1. 安装依赖(共用一个 venv)
+python -m venv .venv && .venv\Scripts\activate   # Git Bash: source .venv/Scripts/activate
+pip install -r requirements.txt -r edu-chat-backend/requirements.txt
+
+# 2. 配置 LLM Key(两项目同格式，复制模板填写，不入库)
+cp config.example.json config.local.json
+cp edu-chat-backend/config.example.json edu-chat-backend/config.local.json
+
+# 3. 训练小模型(已有 ckpt 可跳过；详见下文)
+python -m intent_classifier.distill_train.gen_data
+python -m intent_classifier.distill_train.train_teacher
+python -m intent_classifier.distill_train.train_student_joint
+
+# 4. 一键拉起 意图网关(8601) + 对话后端(8600) 并打开网页
+.venv\Scripts\python.exe run_demo.py        # 或直接双击 start_demo.bat
+```
+
+浏览器打开 `http://127.0.0.1:8600` 即可多轮对话（也可单独跑网关的终端演示
+`python -m intent_classifier.chat_demo`，流式打字机输出）。
+
+**体验多轮槽位记忆**：先发「帮我解一道高二数学题」→ 助手反问要题目 → 再发
+「已知方程 x²-3x+2=0，求x」→ 助手自动记得"高二数学"直接给**引导式提示**（脚手架模式，不给完整答案）。
+
+## 解决方案结构
+
+```
+yitubest/
+├── intent_classifier/        # 项目① NLU意图网关(无状态)  → uvicorn intent_classifier.api:app --port 8601
+│   ├── api.py                #   HTTP服务: POST /classify → IntentResult
+│   ├── rule_engine / small_classifier / llm_refiner ...   #   三层流水线
+│   ├── chat_demo.py          #   终端流式演示(不依赖后端)
+│   └── distill_train/        #   师生蒸馏训练
+├── edu-chat-backend/         # 项目② 对话编排后端         → uvicorn app.main:app --port 8600
+│   ├── app/graph.py          #   LangGraph 5节点工作流
+│   ├── app/gateway.py        #   HTTP调网关(单句识别)
+│   ├── app/slots.py          #   多轮槽位缓存合并(后端独有)
+│   ├── app/agents.py         #   六大业务Agent(答疑=脚手架模式)
+│   ├── app/guard.py          #   输出守卫(need_guide_only防泄答案+安全)
+│   └── static/index.html     #   极简网页聊天(会话隔离)
+├── run_demo.py               # 一键启动两个服务+打开网页
+├── start_demo.bat            # Windows双击版
+└── config.local.json         # LLM密钥(不入库)
+```
+
+### 槽位分工边界（两个项目的契约）
+
+| 功能 | 网关 intent_classifier | 后端 edu-chat-backend |
+|---|---|---|
+| 意图识别 / 槽位抽取 / 单轮 missing_slots | ✅ | ❌ |
+| 多轮槽位记忆缓存 / 合并补齐 / 反问 | ❌ | ✅ |
+| Agent 生成 / 输出守卫 / 网页 Demo | ❌ | ✅ |
+
+网关对外 `IntentResult` schema 稳定（二期升级 tiny-bert 联合短槽模型时后端零改动）。
+
+---
+
+# 项目① intent_classifier · 意图网关详解
+
+> 三层识别：规则拦截 → tiny-bert 候选 → LLM 终审+全量槽位，无状态单句服务。
 
 ## 架构
 
@@ -210,7 +278,7 @@ L = α·CE(intent_logits, y)                     # 意图硬标签
 
 | ID | 标签 | 含义 | 必填槽位 |
 |---|---|---|---|
-| 0 | `QUESTION_SUBJECT` | 学科知识提问 | subject |
+| 0 | `QUESTION_SUBJECT` | 学科知识提问 | subject, question_text |
 | 1 | `QUESTION_POLICY` | 升学/考试政策咨询 | — |
 | 2 | `REQUEST_STUDY_PLAN` | 制定学习计划请求 | subject, grade |
 | 3 | `REQUEST_ERROR_ANALYSIS` | 错题/丢分分析请求 | subject |

@@ -57,7 +57,7 @@ EMOTION_VENT, EMOTION_CRISIS, SMALL_TALK, INFO_SEEK, UNCLEAR
 - emotion: 情绪词(焦虑/压力/低落等)
 - time_horizon: 时间范围(90天/寒假/一个月等)
 
-必填槽位规则: QUESTION_SUBJECT必填subject；REQUEST_STUDY_PLAN必填subject+grade；
+必填槽位规则: QUESTION_SUBJECT必填subject+question_text；REQUEST_STUDY_PLAN必填subject+grade；
 REQUEST_ERROR_ANALYSIS必填subject。缺失的字段名填入 missing_slots。
 
 只输出 JSON,不要任何解释,格式:
