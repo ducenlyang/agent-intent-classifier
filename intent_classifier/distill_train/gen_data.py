@@ -318,7 +318,8 @@ def main() -> None:
     }
     for name, rows in splits.items():
         path = DATA_DIR / f"{name}.csv"
-        with open(path, "w", encoding="utf-8", newline="") as f:
+        # utf-8-sig(带BOM): 中文版 Excel 双击打开不乱码；训练读取端同样用 utf-8-sig
+        with open(path, "w", encoding="utf-8-sig", newline="") as f:
             w = csv.writer(f)
             w.writerow(["text", "label"])
             w.writerows(rows)

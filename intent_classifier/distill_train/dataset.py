@@ -17,9 +17,13 @@ LABEL2ID = {v: int(k) for k, v in LABEL_MAP.items()}
 
 
 def load_csv(path: str | Path) -> tuple[list[str], list[int]]:
-    """读取 data/*.csv (text,label) → texts, label_ids"""
+    """读取 data/*.csv (text,label) → texts, label_ids
+
+    用 utf-8-sig 读取：自动剥离 BOM（gen_data 写出的 Excel 友好格式），
+    也兼容不带 BOM 的普通 UTF-8 文件（如人工标注导出的 csv）。
+    """
     texts, labels = [], []
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, "r", encoding="utf-8-sig") as f:
         for row in csv.DictReader(f):
             texts.append(row["text"])
             labels.append(LABEL2ID[row["label"]])
