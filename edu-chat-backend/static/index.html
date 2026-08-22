@@ -66,8 +66,9 @@
   .session:hover .del { visibility: visible; }
   .session .del:hover { color: #ef4444; background: rgba(239, 68, 68, .1); }
 
-  /* ---------- 主区（居中对话列） ---------- */
-  #main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  /* ---------- 主区（居中对话列 + 右侧轨迹面板） ---------- */
+  #main { flex: 1; display: flex; min-width: 0; min-height: 0; }
+  #chat-col { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   #chat-area { flex: 1 1 0; min-height: 0; overflow-y: auto; }
   .thread { max-width: 760px; margin: 0 auto; padding: 28px 24px 16px;
             display: flex; flex-direction: column; gap: 22px; }
@@ -160,6 +161,35 @@
   #send:hover { background: var(--accent-hover); }
   #send:disabled { background: var(--send-disabled); cursor: not-allowed; }
 
+  /* ---------- 右侧对话轨迹面板 ---------- */
+  #trace-panel { width: 296px; flex-shrink: 0; border-left: 1px solid var(--border);
+                background: var(--sidebar); display: flex; flex-direction: column;
+                min-height: 0; }
+  #trace-panel h3 { font-size: 13px; padding: 16px 16px 12px; color: var(--muted);
+                    font-weight: 600; border-bottom: 1px solid var(--border); }
+  #trace-body { flex: 1 1 0; min-height: 0; overflow-y: auto; padding: 14px 16px;
+                font-size: 12.5px; }
+  .tp-section { margin-bottom: 16px; }
+  .tp-label { font-size: 11px; color: var(--muted-dim); letter-spacing: 1px;
+              margin-bottom: 5px; }
+  .tp-value { color: var(--text); line-height: 1.65; }
+  .tp-dim { color: var(--muted); }
+  .tp-chip { display: inline-block; background: var(--accent-soft); color: var(--accent);
+             border-radius: 4px; padding: 1px 7px; margin: 1px 3px 1px 0; font-size: 11px; }
+  .tp-chip.warn { background: rgba(239, 152, 68, .15); color: #ef9a48; }
+  .tp-steps { list-style: none; margin-left: 7px; border-left: 2px solid var(--border); }
+  .tp-steps li { position: relative; padding: 5px 0 5px 16px; color: var(--muted);
+                 line-height: 1.55; }
+  .tp-steps li::before { content: attr(data-i); position: absolute; left: -9px; top: 7px;
+                         width: 16px; height: 16px; border-radius: 50%;
+                         background: var(--surface-2); color: var(--muted);
+                         font-size: 9px; display: flex; align-items: center;
+                         justify-content: center; }
+  .tp-empty { color: var(--muted-dim); line-height: 1.7; }
+  .row.assistant { cursor: pointer; }
+  .row.assistant.selected .avatar { box-shadow: 0 0 0 2px var(--accent); }
+  @media (max-width: 1080px) { #trace-panel { display: none; } }
+
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation: none !important; transition: none !important; }
   }
@@ -181,15 +211,23 @@
   </div>
 
   <div id="main">
-    <div id="chat-area"><div class="thread" id="thread"></div></div>
-    <div id="input-bar">
-      <div class="input-card">
-        <textarea id="query" rows="1" placeholder="输入消息，Enter 发送（Shift+Enter 换行）" aria-label="消息输入框"></textarea>
-        <button id="send" aria-label="发送">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg>
-        </button>
+    <div id="chat-col">
+      <div id="chat-area"><div class="thread" id="thread"></div></div>
+      <div id="input-bar">
+        <div class="input-card">
+          <textarea id="query" rows="1" placeholder="输入消息，Enter 发送（Shift+Enter 换行）" aria-label="消息输入框"></textarea>
+          <button id="send" aria-label="发送">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg>
+          </button>
+        </div>
       </div>
     </div>
+    <aside id="trace-panel" aria-label="对话轨迹面板">
+      <h3>对话轨迹</h3>
+      <div id="trace-body">
+        <div class="tp-empty">发送消息后，这里实时显示当前消息的识别与路由轨迹。<br><br>点击任意 AI 回复，可回看那条消息的完整轨迹。</div>
+      </div>
+    </aside>
   </div>
 
 <script src="/katex/katex.min.js"></script>
@@ -367,8 +405,13 @@ function renderMessages() {
   if (!s || !s.messages.length) {
     thread.innerHTML = `<div id="empty">${EMPTY_HTML}</div>`; bindChips(); return;
   }
-  s.messages.forEach(m => addBubble(m.role, m.content, m.meta, false));
+  let lastTraced = null;
+  s.messages.forEach(m => {
+    const r = addBubble(m.role, m.content, m.meta, false);
+    if (m.trace) { r._trace = m.trace; lastTraced = r; }
+  });
   $("chat-area").scrollTop = $("chat-area").scrollHeight;
+  selectRow(lastTraced);
 }
 function addBubble(role, content, meta, scroll = true) {
   $("empty")?.remove();
@@ -380,9 +423,53 @@ function addBubble(role, content, meta, scroll = true) {
     `<div class="avatar">${AVATAR_BOT}</div>`;
   row.innerHTML = `${head}<div class="col"><div class="bubble">${body}</div><div class="meta">${meta || ""}</div></div>`;
   THREAD().appendChild(row);
+  if (role !== "user") row.onclick = () => selectRow(row);
   if (scroll) $("chat-area").scrollTop = $("chat-area").scrollHeight;
   return row;
 }
+/* ---------- 右侧对话轨迹面板 ---------- */
+const ROUTE_ZH = { risk: "风险拦截", intercept: "风险拦截", clarify: "反问补槽",
+                   agent: "Agent生成", error: "异常" };
+let selectedRow = null;
+function selectRow(row) {
+  if (selectedRow && selectedRow.classList) selectedRow.classList.remove("selected");
+  selectedRow = row || null;
+  if (selectedRow && selectedRow.classList) selectedRow.classList.add("selected");
+  renderTracePanel(selectedRow ? selectedRow._trace : null);
+}
+function renderTracePanel(t) {
+  const body = $("trace-body");
+  if (!t) {
+    body.innerHTML = '<div class="tp-empty">发送消息后，这里实时显示当前消息的识别与路由轨迹。<br><br>点击任意 AI 回复，可回看那条消息的完整轨迹。</div>';
+    return;
+  }
+  const chips = Object.entries(t.slots || {})
+    .map(([k, v]) => `<span class="tp-chip">${k}=${esc(String(v))}</span>`).join("");
+  const missing = (t.missing || [])
+    .map(f => `<span class="tp-chip warn">缺:${f}</span>`).join("");
+  const steps = (t.dt || []).map((x, i) => `<li data-i="${i + 1}">${esc(x)}</li>`).join("");
+  const conf = t.intent && t.intent.confidence != null
+    ? (t.intent.confidence <= 1 ? (t.intent.confidence * 100).toFixed(1) + "%" : t.intent.confidence)
+    : "—";
+  const guard = t.guard
+    ? (t.guard.passed ? "通过"
+       : "拦截：" + esc((t.guard.actions || []).join("；")))
+    : "—";
+  body.innerHTML = `
+    <div class="tp-section"><div class="tp-label">意图</div>
+      <div class="tp-value"><b>${esc((t.intent && t.intent.primary_intent_zh) || "?")}</b>
+        <span class="tp-dim">${esc((t.intent && t.intent.primary_intent) || "")}</span><br>
+        置信度 ${conf}${t.handledBy ? " · " + esc(t.handledBy) : ""}</div></div>
+    <div class="tp-section"><div class="tp-label">路由</div>
+      <div class="tp-value">${ROUTE_ZH[t.route] || esc(t.route || "")}${t.pending ? ' <span class="tp-dim">· 生成中…</span>' : ""}</div></div>
+    <div class="tp-section"><div class="tp-label">槽位</div>
+      <div class="tp-value">${chips || '<span class="tp-dim">无</span>'} ${missing}</div></div>
+    <div class="tp-section"><div class="tp-label">守卫</div><div class="tp-value">${guard}</div></div>
+    ${t.secs ? `<div class="tp-section"><div class="tp-label">耗时</div><div class="tp-value">${t.secs}s</div></div>` : ""}
+    <div class="tp-section"><div class="tp-label">决策轨迹</div>
+      <ol class="tp-steps">${steps || '<li data-i="1"><span class="tp-dim">无轨迹数据</span></li>'}</ol></div>`;
+}
+
 function addThinking() {
   const row = addBubble("assistant", "");
   row.querySelector(".bubble").innerHTML =
@@ -444,7 +531,16 @@ async function sendStream(s, text, tRow, t0) {
     if (!row) { tRow.remove(); return; }
     if (!acc && doneEv && doneEv.reply) { acc = doneEv.reply; renderStream(bubble, acc); }
     if (metaEl && meta) metaEl.innerHTML = metaText(meta, (performance.now() - t0) / 1000);
-    s.messages.push({ role: "assistant", content: acc, meta: metaEl ? metaEl.innerHTML : "" });
+    const trace = {
+      intent: meta && meta.intent, route: meta && meta.route_kind,
+      slots: (meta && meta.slots) || {}, missing: (meta && meta.missing_slots) || [],
+      dt: (meta && meta.decision_trace) || [], handledBy: meta && meta.handled_by,
+      guard: doneEv ? doneEv.guard : null,
+      secs: ((performance.now() - t0) / 1000).toFixed(1),
+    };
+    row._trace = trace;
+    s.messages.push({ role: "assistant", content: acc, meta: metaEl ? metaEl.innerHTML : "", trace });
+    selectRow(row);
   };
   while (true) {
     const { value, done } = await reader.read();
@@ -463,6 +559,9 @@ async function sendStream(s, text, tRow, t0) {
         meta = ev;
         ensureRow();
         metaEl.innerHTML = metaText(meta, null) + " · ⏳ 生成中…";
+        renderTracePanel({ intent: ev.intent, route: ev.route_kind, slots: ev.slots,
+                           missing: ev.missing_slots, dt: ev.decision_trace || [],
+                           handledBy: ev.handled_by, pending: true });
       } else if (ev.type === "delta") {  // 答案逐块打出
         ensureRow();
         acc += ev.text;
@@ -494,8 +593,16 @@ async function sendJson(s, text, tRow, t0) {
     ` · ${d.route_kind}` +
     (Object.keys(d.slots).length ? ` · 槽位:${Object.entries(d.slots).map(([k, v]) => k + "=" + v).join(" ")}` : "") +
     ` · ${Math.round(performance.now() - t0) / 1000}s`;
-  addBubble("assistant", d.reply, meta);
-  s.messages.push({ role: "assistant", content: d.reply, meta });
+  const jrow = addBubble("assistant", d.reply, meta);
+  const trace = {
+    intent: d.intent, route: d.route_kind, slots: d.slots || {},
+    missing: d.missing_slots || [], dt: d.decision_trace || [],
+    handledBy: d.intent && d.intent.handled_by, guard: d.guard,
+    secs: ((performance.now() - t0) / 1000).toFixed(1),
+  };
+  jrow._trace = trace;
+  s.messages.push({ role: "assistant", content: d.reply, meta, trace });
+  selectRow(jrow);
   return true;
 }
 

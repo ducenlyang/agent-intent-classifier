@@ -72,6 +72,8 @@ def _meta_event(ir: IntentResult, merged: Slots, missing: list[str],
         "route_kind": route_kind,
         "slots": {k: v for k, v in merged.model_dump().items() if v},
         "missing_slots": missing,
+        "handled_by": ir.handled_by,
+        "decision_trace": list(ir.decision_trace),  # 网关逐层决策轨迹(前端侧栏展示)
     }
 
 

@@ -51,6 +51,7 @@ class ChatResponse(BaseModel):
     slots: dict
     missing_slots: list[str]
     guard: dict = Field(default_factory=dict)
+    decision_trace: list[str] = Field(default_factory=list)  # 网关逐层决策轨迹
     latency_ms: int = 0
 
 
@@ -102,6 +103,7 @@ def chat(req: ChatRequest) -> ChatResponse:
         slots={k: v for k, v in state["merged_slots"].model_dump().items() if v},
         missing_slots=state.get("still_missing") or [],
         guard=state.get("guard_info") or {},
+        decision_trace=list(ir.decision_trace),
         latency_ms=int((time.perf_counter() - t0) * 1000),
     )
 
