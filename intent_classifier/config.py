@@ -115,7 +115,7 @@ REQUIRED_SLOTS: dict[PrimaryIntent, list[str]] = {
 # 多轮槽位缓存(CACHEABLE_FIELDS)是对话后端的概念，网关无状态不定义
 
 # 分层置信阈值：L2双头(意图+BIO槽位)全部达标才短路放行，否则升级L3
-CONFIDENCE_HIGH = 0.85   # 意图置信度阈值
+CONFIDENCE_HIGH = 0.90  # 0.85边界置信实测有高自信误判(月考砸了→情绪),提到0.9让边界进L3终审   # 意图置信度阈值
 SLOT_CONF_HIGH = 0.80    # 已检出短槽位(subject/grade)置信度阈值
 COMPLEX_QUERY_LEN = 40   # 超过该字数视为"太复杂"，直接升级L3
 

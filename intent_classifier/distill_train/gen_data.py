@@ -73,11 +73,31 @@ def q_subject() -> str:
         "如何求函数的定义域",
         "等差数列的前n项和公式",
         "议论文的论证方法有哪些",
+        # ---- badcase 回流(2026-08评测): 口语化求助/元请求/步骤追问 ----
+        "帮我解个题呗",
+        "帮我解一道题呗",
+        "帮我看看一道{subject}题呗",
+        "{subject}帮我讲讲呗",
+        "帮我讲讲这道题",
+        "这道题怎么做呀",
+        "这道题第二步看不懂",
+        "这道题第{step}步没看懂",
+        "{topic}这步为什么这么做",
+        "这道题能给我讲讲思路吗",
+        "帮我解{topic}这道题",
+        "来一道{subject}题",
+        "来个{subject}题练练",
+        "出一个{subject}题考考我",
+        "给我出{subject}题",
+        "我想让你给我出一个{subject}题",
+        "考我几个{subject}知识点",
     ]
-    return random.choice(bank).format(
+    _SUBJ = ["数学", "语文", "英语", "物理", "化学", "生物", "历史", "地理"]
+    return (random.choice(bank).format(
         topic=random.choice(TOPICS), grade=random.choice(GRADES),
-        exam=random.choice(EXAMS),
-    ) if random.random() < 0.55 else random.choice(subs)
+        exam=random.choice(EXAMS), subject=random.choice(_SUBJ),
+        step=random.choice(["一", "二", "三", "四", "五", "1", "2", "3"]),
+    ) if random.random() < 0.55 else random.choice(subs))
 
 
 def q_policy() -> str:
@@ -158,6 +178,12 @@ def q_error() -> str:
         "帮我分析下我最近的{exam}成绩为什么下滑",
         "草稿纸乱导致抄错数字，怎么纠正",
         "大题步骤分总是拿不全，问题出在哪",
+        # ---- badcase 回流: "考砸"类孤立句曾高自信误判情绪 ----
+        "我这次{exam}砸了",
+        "{exam}考砸了怎么办",
+        "这次{exam}砸了，帮我看看问题在哪",
+        "我{exam}没考好，想找找原因",
+        "{exam}发挥失常了，帮我诊断一下",
     ]
     return random.choice(bank).format(
         subject=random.choice(["数学", "英语", "语文", "物理", "化学"]),

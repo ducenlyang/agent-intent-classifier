@@ -23,7 +23,35 @@ from .llm_refiner import LLMRefiner, llm_refiner
 from .rule_engine import rule_engine
 from .schemas import IntentResult, Slots
 from .small_classifier import get_small_classifier
-from .slot_lexicon import is_meta_request, rule_hint_slots
+from .slot_lexicon import (
+    GRADE_LEXICON,
+    SUBJECT_LEXICON,
+    is_meta_request,
+    rule_hint_slots,
+)
+
+_SHORT_SLOT_LEXICONS = {"subject": SUBJECT_LEXICON, "grade": GRADE_LEXICON}
+
+
+def _normalize_bio_slots(bert: dict) -> list[str]:
+    """BIO 短槽位词典归一化：span 不在词典时取内部最长词典子串（化学元素→化学），
+    无子串命中则丢弃该槽位（防小模型编造词形污染下游与缓存）。"""
+    fixes = []
+    for field, lexicon in _SHORT_SLOT_LEXICONS.items():
+        cand = bert.get(field)
+        if not cand:
+            continue
+        raw = cand["value"]
+        if raw in lexicon:
+            continue
+        inner = max((w for w in lexicon if w in raw), key=len, default=None)
+        if inner:
+            cand["value"] = inner
+            fixes.append(f"{field}词形修正 {raw}→{inner}")
+        else:
+            del bert[field]
+            fixes.append(f"{field}='{raw}'不在词典，丢弃")
+    return fixes
 
 
 def _merge_short_slots(hints: dict, bert: dict) -> tuple[Slots, dict[str, float]]:
@@ -100,6 +128,7 @@ class IntentPipeline:
         # ---- L2 联合双头：意图候选 + BIO 短槽位 ----
         hints = rule_hint_slots(query)
         out, small_ms = self.small.predict(query)
+        fixes = _normalize_bio_slots(out.bert_short_slots)
         slot_desc = "、".join(
             f"{f}={v['value']}({v['confidence']})" for f, v in out.bert_short_slots.items()
         ) or "无"
@@ -109,14 +138,27 @@ class IntentPipeline:
             f"小模型({self.small.model_name.split('/')[-1]}, {small_ms}ms): "
             f"{out.intent.value} conf={out.intent_confidence}, BIO槽位[{slot_desc}]",
         ]
+        if fixes:
+            trace.append(f"BIO词形归一化: {'；'.join(fixes)}")
 
         # ---- 置信短路：全部达标且非复杂query → 不调LLM直接输出 ----
         intent_ok = out.intent_confidence >= CONFIDENCE_HIGH
         weak_slots = [f for f, v in out.bert_short_slots.items()
                       if v["confidence"] < SLOT_CONF_HIGH]
         complex_q = len(query) > COMPLEX_QUERY_LEN
+        # 分歧即升级：规则词典与BIO在归一化后仍不一致 → 不短路，交LLM终审
+        # 多学科歧义升级："数学物理都不好先看物理"词典取首个命中(数学)但语境
+        # 指向另一个(物理) → 不短路，交LLM终审裁定
+        multi_subject = sum(
+            1 for w in SUBJECT_LEXICON[:10] if w in query
+        ) >= 2
+        disagree = [
+            f for f in ("subject", "grade")
+            if hints.get(f) and (out.bert_short_slots.get(f) or {}).get("value")
+            and out.bert_short_slots[f]["value"] != hints[f]
+        ]
 
-        if intent_ok and not weak_slots and not complex_q:
+        if intent_ok and not weak_slots and not complex_q and not disagree                 and not multi_subject:
             slots, slot_conf = _merge_short_slots(hints, out.bert_short_slots)
             result = IntentResult(
                 query=query,
@@ -142,6 +184,11 @@ class IntentPipeline:
             reasons.append(f"槽位低置信{weak_slots}")
         if complex_q:
             reasons.append(f"复杂query(>{COMPLEX_QUERY_LEN}字)")
+        if multi_subject:
+            reasons.append("多学科命中(语境指向歧义)")
+        if disagree:
+            reasons.append(f"规则槽与BIO槽分歧{disagree}(rule={ {f: hints[f] for f in disagree} },"
+                           f"bio={ {f: out.bert_short_slots[f]['value'] for f in disagree} })")
         refined, llm_ms = self.refiner.refine(query, {
             "intent": out.intent,
             "confidence": out.intent_confidence,

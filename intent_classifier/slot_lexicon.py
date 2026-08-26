@@ -90,12 +90,37 @@ def rule_hint_slots(query: str) -> dict[str, str]:
 META_REQUEST_PATTERNS = [
     "帮我解", "帮我做", "出一道", "考我一", "来一道",
     "一道题", "一个题", "几道题", "道数学题", "道题",
+    "出一个", "出几道", "给我出", "帮我出", "出题", "考我",
 ]
 
 
+# 题干实体特征：句中出现即认定带了真实题目内容，不按元请求处理
+# (防"帮我讲讲这道题：已知x²-4=0"被"道题"模式误判为只要题)
+_PROBLEM_FEATURES = ("已知", "如图", "求证", "求解", "化简", "证明",
+                     "计算", "解方程", "方程", "=", "²", "√", "≥", "≤")
+
+# 出题请求组合语法(动词×名词)，替代纯子串枚举的打地鼠：
+#   "来一个化学题" / "来个题" / "练几道" / "想学化学出点题" 一次接住
+_PROBLEM_REQ_VERBS = ("来", "出", "给", "发", "考", "练", "想学", "想练")
+_PROBLEM_REQ_NOUNS = ("题", "卷", "几道", "单词", "练习")
+
+
+def is_problem_request(query: str) -> bool:
+    """True=用户要求助手【出一道题】(而非自己带题求解答)。
+    出题动词组 × 题类名词组合命中，且无题干实体特征。"""
+    if any(f in query for f in _PROBLEM_FEATURES):
+        return False
+    return (any(v in query for v in _PROBLEM_REQ_VERBS)
+            and any(n in query for n in _PROBLEM_REQ_NOUNS))
+
+
 def is_meta_request(query: str) -> bool:
-    """True=用户在"要题/求讲解"但未给出题目原文。"""
-    return any(p in query for p in META_REQUEST_PATTERNS)
+    """True=用户在"要题/求讲解"但没带真实题目（如"帮我解一道高二数学题"）。
+    含出题请求；两者下游处理不同：解题类反问收题，出题类直接出题。"""
+    if any(f in query for f in _PROBLEM_FEATURES):
+        return False  # 带题干特征：题目就在句子里，不是元请求
+    return is_problem_request(query) or any(
+        p in query for p in META_REQUEST_PATTERNS)
 
 
 def extract_lexicon_slots(query: str) -> dict:

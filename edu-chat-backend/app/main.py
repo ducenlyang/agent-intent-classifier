@@ -52,6 +52,10 @@ class ChatResponse(BaseModel):
     missing_slots: list[str]
     guard: dict = Field(default_factory=dict)
     decision_trace: list[str] = Field(default_factory=list)  # 网关逐层决策轨迹
+    messages: list[dict] = Field(default_factory=list)  # 累积多轮对话记录(含本轮)
+    llm_calls: list[dict] = Field(default_factory=list)  # 本轮LLM调用留痕(输入/输出)
+    anchor: dict = Field(default_factory=dict)  # 会话锚点(focus_question主题)
+    dialog_act: str | None = None  # 对话行为(CONTINUE_CHAT继续锚点对话等)
     latency_ms: int = 0
 
 
@@ -104,6 +108,14 @@ def chat(req: ChatRequest) -> ChatResponse:
         missing_slots=state.get("still_missing") or [],
         guard=state.get("guard_info") or {},
         decision_trace=list(ir.decision_trace),
+        messages=[{"role": "assistant" if getattr(m, "type", "user") == "ai" else "user",
+                   "content": str(getattr(m, "content", ""))}
+                  for m in state.get("messages", [])],
+        llm_calls=[c.model_dump() if hasattr(c, "model_dump") else c
+                   for c in state.get("llm_calls") or []],
+        anchor=state.get("semantic_memory") or {},
+        dialog_act=(state.get("intent_result").dialog_act
+                    if state.get("intent_result") else None),
         latency_ms=int((time.perf_counter() - t0) * 1000),
     )
 

@@ -177,6 +177,8 @@
   .tp-chip { display: inline-block; background: var(--accent-soft); color: var(--accent);
              border-radius: 4px; padding: 1px 7px; margin: 1px 3px 1px 0; font-size: 11px; }
   .tp-chip.warn { background: rgba(239, 152, 68, .15); color: #ef9a48; }
+  .tp-chip.act { background: rgba(34, 197, 94, .14); color: #16a34a; }
+  .tp-chip.act.plain { background: var(--accent-soft); color: var(--accent); }
   .tp-steps { list-style: none; margin-left: 7px; border-left: 2px solid var(--border); }
   .tp-steps li { position: relative; padding: 5px 0 5px 16px; color: var(--muted);
                  line-height: 1.55; }
@@ -186,6 +188,24 @@
                          font-size: 9px; display: flex; align-items: center;
                          justify-content: center; }
   .tp-empty { color: var(--muted-dim); line-height: 1.7; }
+  .tp-msgs { border-left: 2px solid var(--border); margin-left: 7px; padding-left: 10px; }
+  .tp-msg { display: flex; gap: 7px; padding: 4px 0; line-height: 1.55; }
+  .tp-role { flex-shrink: 0; font-size: 11px; border-radius: 4px; padding: 0 6px;
+             height: 18px; display: inline-flex; align-items: center; }
+  .tp-role.u { background: rgba(239, 152, 68, .15); color: #ef9a48; }
+  .tp-role.a { background: var(--accent-soft); color: var(--accent); }
+  .tp-text { color: var(--muted); word-break: break-all; display: -webkit-box;
+             -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+  .tp-role.s { background: var(--accent-soft); color: var(--muted); }
+  .tp-llm { border: 1px solid var(--border); border-radius: 6px; margin: 4px 0; }
+  .tp-llm summary { padding: 5px 8px; cursor: pointer; color: var(--text);
+                    font-size: 11.5px; user-select: none; }
+  .tp-llm[open] summary { border-bottom: 1px solid var(--border); }
+  .tp-llm summary:hover { background: var(--surface-2); }
+  .tp-llm > *:not(summary) { margin: 0 8px 6px; }
+  .tp-text-full { color: var(--muted); word-break: break-all; flex: 1; }
+  .tp-full { color: var(--muted); white-space: pre-wrap; word-break: break-all;
+             line-height: 1.55; max-height: 260px; overflow-y: auto; }
   .row.assistant { cursor: pointer; }
   .row.assistant.selected .avatar { box-shadow: 0 0 0 2px var(--accent); }
   @media (max-width: 1080px) { #trace-panel { display: none; } }
@@ -459,15 +479,63 @@ function renderTracePanel(t) {
     <div class="tp-section"><div class="tp-label">意图</div>
       <div class="tp-value"><b>${esc((t.intent && t.intent.primary_intent_zh) || "?")}</b>
         <span class="tp-dim">${esc((t.intent && t.intent.primary_intent) || "")}</span><br>
-        置信度 ${conf}${t.handledBy ? " · " + esc(t.handledBy) : ""}</div></div>
+        置信度 ${conf}${t.handledBy ? " · " + esc(t.handledBy) : ""}${actBadge(t.act)}</div></div>
     <div class="tp-section"><div class="tp-label">路由</div>
       <div class="tp-value">${ROUTE_ZH[t.route] || esc(t.route || "")}${t.pending ? ' <span class="tp-dim">· 生成中…</span>' : ""}</div></div>
+    <div class="tp-section"><div class="tp-label">会话锚点</div>
+      <div class="tp-value">${anchorHtml(t.anchor)}</div></div>
     <div class="tp-section"><div class="tp-label">槽位</div>
       <div class="tp-value">${chips || '<span class="tp-dim">无</span>'} ${missing}</div></div>
     <div class="tp-section"><div class="tp-label">守卫</div><div class="tp-value">${guard}</div></div>
     ${t.secs ? `<div class="tp-section"><div class="tp-label">耗时</div><div class="tp-value">${t.secs}s</div></div>` : ""}
     <div class="tp-section"><div class="tp-label">决策轨迹</div>
-      <ol class="tp-steps">${steps || '<li data-i="1"><span class="tp-dim">无轨迹数据</span></li>'}</ol></div>`;
+      <ol class="tp-steps">${steps || '<li data-i="1"><span class="tp-dim">无轨迹数据</span></li>'}</ol></div>
+    <div class="tp-section"><div class="tp-label">LLM 调用 (${(t.llm || []).length})</div>
+      <div>${llmHtml(t.llm)}</div></div>
+    <div class="tp-section"><div class="tp-label">多轮对话 messages (${(t.hist || []).length})</div>
+      <div class="tp-msgs">${histHtml(t.hist, t.pending)}</div></div>`;
+}
+const ACT_ZH = { CONTINUE_CHAT: "继续锚点对话", SLOT_ANSWER: "回答反问",
+                 AFFIRM: "承接确认", REFUSE: "拒绝终止", CORRECTED: "矫正意图",
+                 NEW_TASK: "新任务", TOPIC_SWITCH: "同意图切主题" };
+function actBadge(act) {
+  if (!act || !ACT_ZH[act]) return "";
+  const cls = act === "CONTINUE_CHAT" ? "" : " plain";
+  return `<br>对话行为 <span class="tp-chip act${cls}">${ACT_ZH[act]}</span>`;
+}
+function anchorHtml(a) {
+  if (!a || !a.summary) return '<span class="tp-dim">无（未建立主题）</span>';
+  let h = `<span class="tp-chip">${esc(a.summary)}</span>`;
+  if (a.question) h += `<div class="tp-dim" style="margin-top:4px">题目: ${esc(String(a.question).slice(0, 80))}${String(a.question).length > 80 ? "…" : ""}</div>`;
+  if (a.analysis) h += `<div class="tp-dim" style="margin-top:2px">出题记录: ${esc(a.analysis)}…</div>`;
+  return h;
+}
+function llmHtml(calls) {
+  if (!calls || !calls.length)
+    return '<span class="tp-dim">本轮未调用 LLM（小模型短路放行）</span>';
+  const roleZh = r => r === "user" ? "用户" : r === "assistant" ? "AI" : "SYS";
+  const roleCls = r => r === "user" ? "u" : r === "assistant" ? "a" : "s";
+  return calls.map((c, i) => `
+    <details class="tp-llm">
+      <summary>#${i + 1} ${esc(c.purpose || "LLM调用")} · ${((c.latency_ms || 0) / 1000).toFixed(1)}s${c.error ? " · ❌失败" : ""}</summary>
+      <div class="tp-label" style="margin-top:6px">输入（${(c.messages || []).length} 条消息）</div>
+      ${(c.messages || []).map(m => `
+        <div class="tp-msg"><span class="tp-role ${roleCls(m.role)}">${roleZh(m.role)}</span>
+          <span class="tp-text-full">${esc(m.content || "")}</span></div>`).join("") ||
+        '<span class="tp-dim">（无输入记录）</span>'}
+      <div class="tp-label" style="margin-top:6px">输出</div>
+      <div class="tp-full">${esc(c.error ? "错误：" + c.error : c.output || "（空）")}</div>
+    </details>`).join("");
+}
+function histHtml(hist, pending) {
+  if (!hist || !hist.length) return '<span class="tp-dim">无</span>';
+  return hist.map(m =>
+    `<div class="tp-msg"><span class="tp-role ${m.role === "user" ? "u" : "a"}">` +
+    `${m.role === "user" ? "用户" : "AI"}</span>` +
+    `<span class="tp-text">${esc(m.content)}` +
+    (pending && m === hist[hist.length - 1] ? ' <span class="tp-dim">⏳</span>' : "") +
+    `</span></div>`).join("") +
+    (pending ? '<div class="tp-msg"><span class="tp-role a">AI</span><span class="tp-dim">生成中…</span></div>' : "");
 }
 
 function addThinking() {
@@ -535,6 +603,9 @@ async function sendStream(s, text, tRow, t0) {
       intent: meta && meta.intent, route: meta && meta.route_kind,
       slots: (meta && meta.slots) || {}, missing: (meta && meta.missing_slots) || [],
       dt: (meta && meta.decision_trace) || [], handledBy: meta && meta.handled_by,
+      hist: (doneEv && doneEv.history) || (meta && meta.history) || [],
+      llm: (doneEv && doneEv.llm_calls) || (meta && meta.llm_calls) || [],
+      anchor: (meta && meta.anchor) || {}, act: (meta && meta.dialog_act) || null,
       guard: doneEv ? doneEv.guard : null,
       secs: ((performance.now() - t0) / 1000).toFixed(1),
     };
@@ -561,7 +632,9 @@ async function sendStream(s, text, tRow, t0) {
         metaEl.innerHTML = metaText(meta, null) + " · ⏳ 生成中…";
         renderTracePanel({ intent: ev.intent, route: ev.route_kind, slots: ev.slots,
                            missing: ev.missing_slots, dt: ev.decision_trace || [],
-                           handledBy: ev.handled_by, pending: true });
+                           handledBy: ev.handled_by, hist: ev.history || [],
+                           llm: ev.llm_calls || [], anchor: ev.anchor || {},
+                           act: ev.dialog_act || null, pending: true });
       } else if (ev.type === "delta") {  // 答案逐块打出
         ensureRow();
         acc += ev.text;
@@ -597,6 +670,8 @@ async function sendJson(s, text, tRow, t0) {
   const trace = {
     intent: d.intent, route: d.route_kind, slots: d.slots || {},
     missing: d.missing_slots || [], dt: d.decision_trace || [],
+    hist: d.messages || [], llm: d.llm_calls || [], anchor: d.anchor || {},
+    act: d.dialog_act || null,
     handledBy: d.intent && d.intent.handled_by, guard: d.guard,
     secs: ((performance.now() - t0) / 1000).toFixed(1),
   };

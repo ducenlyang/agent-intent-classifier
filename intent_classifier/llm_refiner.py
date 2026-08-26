@@ -13,6 +13,7 @@ import time
 
 from .config import (
     ALLOWED_SECONDARY,
+    GEN_MODEL,
     LLM_API_KEY,
     LLM_BASE_URL,
     LLM_MODEL,
@@ -23,7 +24,7 @@ from .config import (
     SecondaryIntent,
 )
 from .rule_engine import CHEAT_KEYWORDS, PSYCH_HIGH_KEYWORDS, _matched
-from .schemas import IntentResult, RiskFlag, Slots
+from .schemas import IntentResult, LLMCallRecord, RiskFlag, Slots
 from .slot_lexicon import (
     EMOTION_LEXICON,
     ERROR_HINTS,
@@ -60,6 +61,10 @@ EMOTION_VENT, EMOTION_CRISIS, SMALL_TALK, INFO_SEEK, UNCLEAR
 
 必填槽位规则: QUESTION_SUBJECT必填subject+question_text；REQUEST_STUDY_PLAN必填subject+grade；
 REQUEST_ERROR_ANALYSIS必填subject。缺失的字段名填入 missing_slots。
+
+重要: 若输入是依赖对话上下文的省略句/承接句/改口修正句(如"不对""我是高三""就按这个"
+"再来一个""按你说的来")，脱离上下文无法判断意图时，primary_intent 必须输出 UNKNOWN，
+不要猜测成任何意图——下游对话管理器会结合会话状态解释这类输入。
 
 只输出 JSON,不要任何解释,格式:
 {"primary_intent":"...","secondary_intent":"...","confidence":0.0,
@@ -130,20 +135,29 @@ class LLMRefiner:
     def refine(self, query: str, layer2: dict) -> tuple[IntentResult, int]:
         """layer2: {"intent": PrimaryIntent, "confidence": float}"""
         t0 = time.perf_counter()
+        llm_calls: list[LLMCallRecord] = []
         if self.available:
             try:
-                raw = self._call_llm(query, layer2)
+                raw, record = self._call_llm(query, layer2)
+                llm_calls.append(record)
                 parsed = _validate(raw, query, layer2)  # 白名单校验后再构建结果
                 result = self._build_result(query, layer2, parsed, "LLM_REFINE")
+                result.llm_calls = llm_calls
                 return result, int((time.perf_counter() - t0) * 1000)
             except Exception as e:  # 网络/解析异常 → 启发式兜底
                 print(f"[LLMRefiner] LLM 调用失败({e})，降级启发式精判")
+                llm_calls.append(LLMCallRecord(
+                    purpose="L3意图终审", model=GEN_MODEL, messages=[],
+                    output="", error=str(e)[:300],
+                    latency_ms=int((time.perf_counter() - t0) * 1000),
+                ))
         parsed = self._heuristic_refine(query, layer2)
         result = self._build_result(query, layer2, parsed, "LLM_FALLBACK")
+        result.llm_calls = llm_calls
         return result, int((time.perf_counter() - t0) * 1000)
 
     # ------------------------------------------------------------------
-    def _call_llm(self, query: str, layer2: dict) -> dict:
+    def _call_llm(self, query: str, layer2: dict) -> tuple[dict, LLMCallRecord]:
         from .llm_client import chat_completion
 
         user_msg = (
@@ -154,20 +168,23 @@ class LLMRefiner:
             f"小模型BIO短槽位: {json.dumps(layer2.get('bert_short_slots') or {}, ensure_ascii=False)}\n"
             f"请终审意图并抽取全部槽位(短槽位候选仅供参考，你拥有终审权)。"
         )
+        messages = [
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user", "content": user_msg},
+        ]
+        t0 = time.perf_counter()
         content = chat_completion(
-            [
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": user_msg},
-            ],
-            temperature=0.1,
-            max_tokens=400,
-            timeout=LLM_TIMEOUT,
+            messages, temperature=0.1, max_tokens=400, timeout=LLM_TIMEOUT,
+        )
+        record = LLMCallRecord(
+            purpose="L3意图终审", model=GEN_MODEL, messages=messages,
+            output=content, latency_ms=int((time.perf_counter() - t0) * 1000),
         )
         # 容忍 markdown 代码块包裹
         m = re.search(r"\{.*\}", content, re.S)
         if not m:
             raise ValueError(f"LLM 未返回 JSON: {content[:120]}")
-        return json.loads(m.group(0))
+        return json.loads(m.group(0)), record
 
     def _heuristic_refine(self, query: str, layer2: dict) -> dict:
         """无 API Key 时的离线精判：证据词校验 + 候选/词典槽位合并。

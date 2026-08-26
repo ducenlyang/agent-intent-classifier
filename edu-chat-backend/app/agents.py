@@ -90,11 +90,32 @@ def get_agent(intent: str) -> dict:
 
 
 def build_messages(agent: dict, user_query: str, slots: dict,
-                   history: list[dict], strict: bool = False) -> list[dict]:
-    """组装 Agent 专属 system Prompt + 槽位参数 + 最近对话历史。"""
+                   history: list[dict], strict: bool = False,
+                   anchor: dict | None = None,
+                   problem_request: bool = False) -> list[dict]:
+    """组装 Agent 专属 system Prompt + 槽位参数 + 最近对话历史。
+
+    anchor: 会话锚点(focus_question主题)。注入 system 末尾而非 history——
+    长会话历史被截断时锚点仍稳定在场，Agent 永远知道在讨论哪道题/主题。
+    problem_request: 出题模式——学生要你【出一道题】而非解答带来的题。
+    """
     system = agent["system_prompt"]
     if strict and agent.get("strict_extra"):
         system += "\n" + agent["strict_extra"]
+    if problem_request:
+        system += ("\n\n【出题模式】学生请求你直接出一道题：按学科和年级出难度适中的"
+                   "一道题(题干完整、数值干净)，出题后邀请学生作答并说明'做完发我，"
+                   "我不直接给答案，一步步带你验证'。不要反问学生要题。")
+    if anchor and anchor.get("focus_intent"):
+        ctx = f"\n\n【当前会话主题锚点】主题: {anchor.get('focus_summary') or ''}"
+        if anchor.get("focus_question"):
+            ctx += f"\n正在讨论的题目: {anchor['focus_question']}\n" \
+                   "学生后续输入大概率是就这道题来回追问/要变式，讲解始终围绕它。"
+        elif anchor.get("question_full_analysis"):
+            ctx += ("\n你此前出的题及讲解要点: "
+                    + anchor["question_full_analysis"][:600]
+                    + "\n学生后续输入大概率是在作答/追问这道题。")
+        system += ctx
     slot_desc = json.dumps(slots, ensure_ascii=False) if slots else "无"
     msgs = [{"role": "system", "content": system}]
     msgs.extend(history[-HISTORY_WINDOW:])  # 多轮上下文
@@ -106,19 +127,29 @@ def build_messages(agent: dict, user_query: str, slots: dict,
 
 
 def generate(agent: dict, user_query: str, slots: dict,
-             history: list[dict], strict: bool = False) -> str:
+             history: list[dict], strict: bool = False,
+             llm_log: list | None = None, anchor: dict | None = None,
+             problem_request: bool = False) -> str:
     return chat_completion(
-        build_messages(agent, user_query, slots, history, strict),
+        build_messages(agent, user_query, slots, history, strict,
+                       anchor, problem_request),
         temperature=agent.get("temperature", 0.6),
         max_tokens=1200,
+        llm_log=llm_log,
+        purpose=f"{agent['name']}·{'严格重生成' if strict else '生成'}",
     )
 
 
 def generate_stream(agent: dict, user_query: str, slots: dict,
-                    history: list[dict], strict: bool = False):
+                    history: list[dict], strict: bool = False,
+                    llm_log: list | None = None, anchor: dict | None = None,
+                    problem_request: bool = False):
     """流式生成，逐块 yield 文本增量（网页打字机效果）。"""
     yield from chat_completion_stream(
-        build_messages(agent, user_query, slots, history, strict),
+        build_messages(agent, user_query, slots, history, strict,
+                       anchor, problem_request),
         temperature=agent.get("temperature", 0.6),
         max_tokens=1200,
+        llm_log=llm_log,
+        purpose=f"{agent['name']}·流式生成",
     )
