@@ -184,6 +184,24 @@ def _is_refuse(q: str) -> bool:
     return bool(q) and len(q) <= 12 and any(w in q for w in REFUSE_WORDS)
 
 
+_PUNCT = "，。！？,.!?~～ 、"
+
+
+def _pure_refuse(q: str, ir: IntentResult) -> bool:
+    """区分纯拒绝与"放弃旧+转向新"的复合话语：
+    "算了不用了"→纯拒绝，终止任务；
+    "算了，我想看物理的"→拒绝词只是话语标记，句中还有新主题(subject=物理)，
+    应放行正常路由由主题指纹切换，不能一刀切终止。
+    判定：剥离拒绝词与标点后无实质内容、且网关未抽到任何主题槽位。"""
+    residual = q
+    for w in sorted(REFUSE_WORDS, key=len, reverse=True):
+        residual = residual.replace(w, "")
+    residual = residual.strip(_PUNCT)
+    has_topic = bool(ir.slots.subject or ir.slots.topic
+                     or ir.slots.time_horizon or ir.slots.grade)
+    return not has_topic and len(residual) <= 2
+
+
 # ---- 会话锚点(focus_question)配套信号 ----
 VARIANT_KEYWORDS = ("变式", "换一道", "换一个题", "类似的题", "再出一道",
                     "再来一道题", "再来一个", "再出一个", "再来一题",
@@ -313,13 +331,16 @@ def contextual_resolve_node(state: ChatState) -> dict:
             cleanup["intent_result"] = ir3
         return cleanup
 
-    # ---- L0前哨：承接/拒绝词最优先（明确对话行为优先于锚点继承，标签才准确） ----
+    # ---- L0前哨：明确对话行为最优先(标签准确) ----
+    # 承接确认("就按这个执行")优先于锚点继承
     if busy and active and _is_affirm(q) and not _is_refuse(q):
         print(f"[dm] 消歧 session={sid} layer=L1_AFFIRM -> {active}")
         return {"intent_result": _inherit(
             ir, active, f"消歧L1: 承接确认词命中，继续会话焦点{active}", act="AFFIRM"),
             "awaiting_asked": [], "last_prompt_type": "NONE"}
-    if _is_refuse(q):
+    # 纯拒绝终止("算了不用了")；"算了，我想看物理的"类复合话语(拒绝词+新主题)
+    # 不在此终止，放行正常路由由主题指纹切换
+    if _is_refuse(q) and _pure_refuse(q, ir):
         print(f"[dm] 消歧 session={sid} layer=L1_REFUSE -> 终止任务")
         return {"pending_direct_reply": "好的，那咱们就先到这里～后续有别的需求随时告诉我。",
                 "task_status": "IDLE", "last_prompt_type": "NONE",
@@ -351,8 +372,15 @@ def contextual_resolve_node(state: ChatState) -> dict:
 
     # ---- L2 会话焦点继承(有限状态机门控：仅任务中，IDLE 禁止继承防串任务) ----
     if busy and active:
-        print(f"[dm] 消歧 session={sid} layer=L2_INHERIT -> {active}")
-        act2 = "CONTINUE_CHAT" if focus_intent and active == focus_intent else None
+        # 继承意图，但若本轮显式说了新学科("算了，想看物理")→ 标 TOPIC_SWITCH，
+        # 主题指纹稍后在路由层完成切换(清旧题+换主题)
+        drift_here = (ir.slots.subject and focus_intent
+                      and (state.get("semantic_memory") or {}).get("focus_subject")
+                      and ir.slots.subject != (state["semantic_memory"] or {}).get("focus_subject"))
+        act2 = ("TOPIC_SWITCH" if drift_here
+                else "CONTINUE_CHAT" if focus_intent and active == focus_intent else None)
+        print(f"[dm] 消歧 session={sid} layer=L2_INHERIT -> {active}"
+              f"{'(学科漂移)' if drift_here else ''}")
         return {"intent_result": _inherit(
             ir, active, f"消歧L2: 会话焦点继承{active}(task_status={status})，"
                         f"连同历史交回原Agent", act=act2),
