@@ -51,7 +51,7 @@ d1 = step({"primary_intent": "QUESTION_SUBJECT",
                               question_text="解方程 x²-5x+6=0", student_wrong_answer="x=1"))
 
 # ② 辅导推进（FSM 前进 + continue 不动栈）
-d1.task.advance()  # parse_question → diagnose_error_cause
+tm.advance_active(SID)  # FSM推进: parse_question → diagnose_error_cause (manager内合法改栈)
 step({"primary_intent": "QUESTION_SUBJECT", "query": "为什么会判别式小于零",
       "slots": {}}, "题1追问")
 before = tm.snapshot(SID)
@@ -61,7 +61,7 @@ d2 = step({"primary_intent": "REQUEST_ERROR_ANALYSIS",
            "query": "先帮我看看这道：已知函数f(x)=x²-2x，求最小值",
            "slots": {"question_text": "求f(x)=x²-2x最小值", "subject": "数学"}},
           "题2", QuestionMeta(subject="数学", grade="初三", question_text="求f(x)=x²-2x最小值"))
-d2.task.advance()
+tm.advance_active(SID)
 
 # ④ 再切两道（触发沉降：内存suspended>3）
 d3 = step({"primary_intent": "QUESTION_SUBJECT", "query": "这道英语完形怎么选",
