@@ -26,6 +26,7 @@ from .small_classifier import get_small_classifier
 from .slot_lexicon import (
     GRADE_LEXICON,
     SUBJECT_LEXICON,
+    extract_lexicon_slots,
     is_meta_request,
     rule_hint_slots,
 )
@@ -160,6 +161,11 @@ class IntentPipeline:
 
         if intent_ok and not weak_slots and not complex_q and not disagree                 and not multi_subject:
             slots, slot_conf = _merge_short_slots(hints, out.bert_short_slots)
+            # 短路跳过了L3，长槽位用零成本词典抽取补齐(否则"寒假"类时间/主题丢失)
+            lex = extract_lexicon_slots(query)
+            slots.topic = slots.topic or lex["topic"]
+            slots.emotion = slots.emotion or lex["emotion"]
+            slots.time_horizon = slots.time_horizon or lex["time_horizon"]
             result = IntentResult(
                 query=query,
                 primary_intent=out.intent,

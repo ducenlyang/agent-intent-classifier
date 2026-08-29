@@ -70,6 +70,7 @@ class ChatState(TypedDict, total=False):
     task_status: str                        # IDLE / IN_TASK / AWAIT_USER_REPLY
     last_prompt_type: str                   # 上一轮AI提问类型: ASK_SLOT/ASK_CONFIRM/NONE
     awaiting_asked: list[str]               # ASK_SLOT 时等待用户补充的槽位清单
+    slot_states: dict[str, str]             # 槽位三态: uncollected/filled/pending_correction
     semantic_memory: dict                   # 会话锚点(focus_question/summary)，不进messages不参与截断
     problem_request: bool                   # 出题请求：路由答疑Agent出题模式(不反问收题)
     pending_direct_reply: str               # 消歧层直接生成的回复(拒绝/澄清)，跳过Agent
@@ -255,6 +256,26 @@ def _inherit(ir: IntentResult, target: str, note: str,
 #   L1 规则词库(承接确认/拒绝) → L2 会话焦点继承(状态机门控) 
 #   → L3 上下文LLM矫正 → L4 定向澄清反问。命中即终止。
 # ---------------------------------------------------------------------------
+# ---- 槽位修正(TODO-oriented经典缺陷修复)：用户要改已填槽位 ----
+# 三态: uncollected未收集 / filled已收集 / pending_correction待修改
+CORRECT_WORDS = ("不对", "说错了", "改一下", "换个", "换一个", "换科目",
+                 "重新说", "不是这个", "改成", "我要改", "填错了")
+
+
+def _wants_correction(q: str) -> bool:
+    return any(w in q for w in CORRECT_WORDS)
+
+
+def _slot_states_of(state: dict, merged_slots) -> dict:
+    """必填槽位三态快照: filled / uncollected（pending_correction 只在修正轮出现）。"""
+    from .config import REQUIRED_SLOTS
+    from .gateway import IntentResult
+    ir = state.get("intent_result")
+    intent = ir.primary_intent.value if ir else "UNKNOWN"
+    return {f: ("filled" if getattr(merged_slots, f, None) else "uncollected")
+            for f in REQUIRED_SLOTS.get(intent, [])}
+
+
 def contextual_resolve_node(state: ChatState) -> dict:
     ir: IntentResult = state["intent_result"]
     q = (state.get("user_query") or "").strip()
@@ -265,6 +286,46 @@ def contextual_resolve_node(state: ChatState) -> dict:
     asked = state.get("awaiting_asked") or []
     sid = state.get("session_id", "-")
     busy = status in ("IN_TASK", "AWAIT_USER_REPLY")
+
+    # -- 槽位修正：等待补充期间用户要改已答内容("不对，是高一"/"换个学科")
+    #    处理：命中修正词→本轮能抽到的新值直接覆盖(该槽=filled)，
+    #    抽不到新值的等待槽=pending_correction并单独重问；任务绝不终止，其余槽位保留。
+    if status == "AWAIT_USER_REPLY" and prompt_type == "ASK_SLOT" and asked \
+            and _wants_correction(q):
+        new_vals = {f: getattr(ir.slots, f) for f in asked
+                    if getattr(ir.slots, f, None)}
+        reask = [f for f in asked if f not in new_vals]
+        if new_vals:
+            ir2 = _inherit(ir, active, f"消歧: 槽位修正，覆盖{list(new_vals)}，"
+                                       f"任务继续(其余槽位保留)", act="CORRECTED")
+            for f, v in new_vals.items():
+                setattr(ir2.slots, f, v)
+            ir2.missing_slots = reask
+            if reask:  # 还有没给新值的槽位 → 单独重问
+                from .slots import CLARIFY_QUESTIONS
+                reply = "好的，已修改。那" + " ".join(
+                    CLARIFY_QUESTIONS.get(f, f"请补充{f}") for f in reask)
+                print(f"[dm] 消歧 session={sid} layer=SLOT_CORRECT "
+                      f"覆盖={new_vals} 待重问={reask}")
+                return {"intent_result": ir2, "awaiting_asked": reask,
+                        "task_status": "AWAIT_USER_REPLY",
+                        "last_prompt_type": "ASK_SLOT",
+                        "pending_direct_reply": reply, "llm_calls": []}
+            print(f"[dm] 消歧 session={sid} layer=SLOT_CORRECT 覆盖={new_vals} 任务继续")
+            return {"intent_result": ir2, "awaiting_asked": [],
+                    "last_prompt_type": "NONE", "llm_calls": []}
+        # 修正词但没说新值 → 全部等待槽位转 pending_correction，重问第一等待槽
+        f0 = asked[0]
+        from .slots import CLARIFY_QUESTIONS
+        reply = "没问题，我们改一下。" + CLARIFY_QUESTIONS.get(f0, f"请补充{f0}")
+        print(f"[dm] 消歧 session={sid} layer=SLOT_CORRECT 重问={f0}")
+        return {"pending_direct_reply": reply,
+                "task_status": "AWAIT_USER_REPLY", "last_prompt_type": "ASK_SLOT",
+                "awaiting_asked": [f0], "llm_calls": [],
+                "intent_result": ir.model_copy(update={
+                    "dialog_act": "CORRECTED",
+                    "decision_trace": ir.decision_trace + [
+                        f"消歧: 修正请求(未带新值)，槽位{asked}转待修改并重问"]})}
 
     # -- 槽位反问等待：纯值/短回答直接绑定槽位("化学"/"高二数学不好")
     if status == "AWAIT_USER_REPLY" and prompt_type == "ASK_SLOT" and asked:
@@ -281,7 +342,9 @@ def contextual_resolve_node(state: ChatState) -> dict:
             ir2.missing_slots = [f for f in asked if f not in filled]
             print(f"[dm] 消歧 session={sid} layer=SLOT_BIND bound={filled}")
             return {"intent_result": ir2, "awaiting_asked": [],
-                    "last_prompt_type": "NONE", "llm_calls": []}
+                    "last_prompt_type": "NONE", "llm_calls": [],
+                    "slot_states": {f: "filled" for f in asked if f in filled}
+                    | {f: "uncollected" for f in asked if f not in filled}}
 
     if cur != "UNKNOWN":
         # 网关判明意图。若与锚点主题一致且无新题信号 → 印证为继续锚点对话
@@ -408,10 +471,12 @@ def contextual_resolve_node(state: ChatState) -> dict:
             "awaiting_asked": [], "last_prompt_type": "NONE",
             "llm_calls": [rec]}
 
-    # ---- L4 定向澄清：结合会话焦点二选一，重置任务状态 ----
+    # ---- L4 定向澄清：结合会话焦点二选一。任务进行中保留任务状态
+    #      (用户重试即可继续，不清空已收集进度——修复"未识别直接结束任务"缺陷) ----
     print(f"[dm] 消歧 session={sid} layer=L4_CLARIFY")
+    keep = {"task_status": status, "last_active_intent": active} if busy else            {"task_status": "IDLE"}
     return {"pending_direct_reply": _clarify_reply(active),
-            "task_status": "IDLE", "last_prompt_type": "NONE", "awaiting_asked": [],
+            **keep, "last_prompt_type": "NONE", "awaiting_asked": [],
             "llm_calls": [rec] if rec else [],
             "intent_result": ir.model_copy(update={
                 "decision_trace": ir.decision_trace + ["消歧L4: 各层未命中，定向澄清反问"]})}
@@ -532,6 +597,8 @@ def slot_merge_and_router(state: ChatState) -> dict:
                 # 进入槽位等待状态：记录期待的槽位清单(有类型绑定供下轮消解)
                 "task_status": "AWAIT_USER_REPLY", "last_prompt_type": "ASK_SLOT",
                 "awaiting_asked": list(missing),
+                "slot_states": {**{f: "filled" for f in missing if getattr(merged, f, None)},
+                                **{f: "uncollected" for f in missing if not getattr(merged, f, None)}},
                 "messages": [{"role": "assistant", "content": reply}]}
 
     _emit(_meta_event(ir, merged, [], "agent", state))
