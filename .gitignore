@@ -23,3 +23,6 @@ Thumbs.db
 
 # HuggingFace 缓存
 .cache/
+
+# Task-Manager 冷存储(运行时生成)
+edu-chat-backend/data/
