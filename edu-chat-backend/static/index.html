@@ -76,12 +76,8 @@
                       line-height: 1.65; word-break: break-word; }
 
   /* AI回复：小logo + 纯文本无气泡（DeepSeek式） */
-  .row.assistant { display: flex; gap: 12px; animation: fadeUp .22s ease; }
-  .row.assistant .avatar { width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0;
-                           background: var(--accent); color: #fff;
-                           display: flex; align-items: center; justify-content: center;
-                           margin-top: 2px; }
-  .row.assistant .col { flex: 1; min-width: 0; }
+  .row.assistant { animation: fadeUp .22s ease; }
+  .row.assistant .col { min-width: 0; }
   .row.assistant .bubble { line-height: 1.75; word-break: break-word; }
   @keyframes fadeUp { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; } }
 
@@ -221,7 +217,8 @@
   .tp-full { color: var(--muted); white-space: pre-wrap; word-break: break-all;
              line-height: 1.55; max-height: 260px; overflow-y: auto; }
   .row.assistant { cursor: pointer; }
-  .row.assistant.selected .avatar { box-shadow: 0 0 0 2px var(--accent); }
+  .row.assistant.selected .col { box-shadow: -3px 0 0 0 var(--accent); padding-left: 10px;
+                                 border-radius: 4px; }
   @media (max-width: 1080px) { #trace-panel { display: none; } }
 
   @media (prefers-reduced-motion: reduce) {
@@ -400,8 +397,8 @@ let curSid = null;
 
 const ICON_CHAT = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>';
 const ICON_X = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>';
-const AVATAR_BOT = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="8" width="16" height="12" rx="3"/><path d="M12 8V4M8 4h8"/><circle cx="9" cy="13" r="1" fill="currentColor"/><circle cx="15" cy="13" r="1" fill="currentColor"/></svg>';
-const AVATAR_BOT_BIG = AVATAR_BOT.replace('width="15" height="15"', 'width="24" height="24"');
+const LOGO_WHALE = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21.6 8.2c-.9 1.9-2.4 3.1-4.3 3.7.1.5.2 1 .2 1.5 0 3.7-3.5 6.6-8.2 6.6-3.3 0-6.2-1.5-7.6-3.8 2 1.1 4.3 1.2 6 .2 2.6-1.3 3.5-4.1 2.1-6.5-.9-1.6-2.7-2.4-4.5-2.2C7 4.9 10 3.4 13.4 3.8c1-1.1 2.4-1.8 4.1-1.8-.6.6-1 1.4-1.2 2.2 1.1 0 2.1.4 2.9 1 .9.7 1.7 1.6 2.4 3z"/></svg>';
+const AVATAR_BOT_BIG = LOGO_WHALE;
 
 function renderSessions() {
   const box = $("sessions"); box.innerHTML = "";
@@ -469,9 +466,7 @@ function addBubble(role, content, meta, scroll = true) {
   row.className = "row " + (role === "user" ? "user" : "assistant");
   const body = role === "user" ? esc(content) : mdToHtml(content);
   // 用户无头像(右侧灰气泡)；AI左侧小logo+纯文本；.meta始终存在便于流式填充
-  const head = role === "user" ? "" :
-    `<div class="avatar">${AVATAR_BOT}</div>`;
-  row.innerHTML = `${head}<div class="col"><div class="bubble">${body}</div><div class="meta">${meta || ""}</div></div>`;
+  row.innerHTML = `<div class="col"><div class="bubble">${body}</div><div class="meta">${meta || ""}</div></div>`;
   THREAD().appendChild(row);
   if (role !== "user") row.onclick = () => selectRow(row);
   if (scroll) $("chat-area").scrollTop = $("chat-area").scrollHeight;
