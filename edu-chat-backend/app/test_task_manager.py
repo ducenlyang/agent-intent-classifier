@@ -71,10 +71,18 @@ tm3._activity[s3] -= 91 * 60        # 模拟91分钟无交互(manager活动钟)
 assert not tm3.is_active_valid(s3)
 assert tm3.decide(s3, UpstreamIntent.CHAT, False).action is Action.KNOWLEDGE_QA
 ok("超时90min(单调活动钟)→active失效→knowledge_qa")
-# continue也会刷新活动钟：刚交互过→有效
-tm3.execute(s3, tm3.decide(s3, UpstreamIntent.KNOWLEDGE_QA, False))  # 重建activity? 不:execute会刷新
-tm3._activity[s3] = time.monotonic()
-assert tm3.is_active_valid(s3) or True
+# 复审#2语义: 无关问答(knowledge_qa)不得刷新活动钟复活过期任务
+tm3.execute(s3, tm3.decide(s3, UpstreamIntent.KNOWLEDGE_QA, False))
+assert not tm3.is_active_valid(s3), "无关问答不应复活过期任务"
+ok("knowledge_qa不刷新活动钟(过期任务不被无关问答复活)")
+# 边界内继续任务 → continue刷新活动钟 → 重新有效(#7核心修复写实断言)
+tm3._activity[s3] = time.monotonic() - 89 * 60      # 89分钟: 仍在窗口内
+d = tm3.decide(s3, UpstreamIntent.CHAT, False)
+assert d.action is Action.CONTINUE
+before = tm3._activity[s3]
+tm3.execute(s3, d)
+assert tm3._activity[s3] > before and tm3.is_active_valid(s3)
+ok("窗口内continue刷新活动钟→长辅导不误失效(写实断言)")
 tm4, s4 = fresh(), "s4"
 tm4.execute(s4, tm4.decide(s4, UpstreamIntent.START_EXERCISE_TUTOR, True),
             QuestionMeta(subject="数学"))                   # 无question_text
@@ -203,6 +211,33 @@ try:
     ok("置信度充足时不调LLM")
 finally:
     lc.chat_completion = orig
+
+print("== 9.5 START空meta降级 + advance门控 + relevant严格布尔 ==")
+tm95, s95 = fresh(), "s95"
+d = tm95.dispatch(s95, UpstreamIntent.START_EXERCISE_TUTOR, True,
+                  question_meta=QuestionMeta())      # 实体True但没带题面
+assert d.action is Action.KNOWLEDGE_QA and "题面" in d.reason
+assert tm95.stack(s95).active is None
+ok("START空meta→降级knowledge_qa且不动栈(无僵尸任务)")
+d2 = tm95.dispatch(s95, UpstreamIntent.START_EXERCISE_TUTOR, True, question_meta=q("真题面"))
+assert d2.action is Action.START and tm95.stack(s95).active is not None
+ok("正常meta→START照常")
+tm95._activity[s95] -= 91 * 60                       # 过期
+assert tm95.advance_active(s95) is None
+ok("advance门控: 过期active拒绝推进")
+# relevant严格布尔: 字符串"false"必须按无关处理
+import app.llm_client as lc2
+orig2 = lc2.chat_completion
+try:
+    lc2.chat_completion = lambda msgs, **kw: '{"relevant": "false"}'
+    tmx, sx = fresh(), "sx"
+    start(tmx, sx, "锚定题目")
+    tmx._activity[sx] -= 91 * 60                     # active过期→valid=False
+    d = tmx.decide_via_llm(sx, "无关输入", 0.4, False)
+    assert d.action is Action.KNOWLEDGE_QA, d
+    ok('relevant="false"(字符串)按无关处理(严格布尔)')
+finally:
+    lc2.chat_completion = orig2
 
 print("== 10. FSM 推进: manager内合法改栈 ==")
 tm, sid = fresh(), "s12"

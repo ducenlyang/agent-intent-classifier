@@ -29,8 +29,7 @@ def view(title):
 def step(upstream_ir: dict, label: str, meta: QuestionMeta | None = None):
     """模拟一轮上游输出 → 适配 → 决策 → 执行。"""
     tag, has_entity = adapt(upstream_ir)
-    d = tm.decide(SID, tag, has_entity)
-    d = tm.execute(SID, d, question_meta=meta)
+    d = tm.dispatch(SID, tag, has_entity, question_meta=meta)  # 推荐运行时入口
     mark = {"start_exercise_tutor": "▶ 新建辅导", "resume_history_tutor": "↻ 恢复辅导",
             "continue_current_tutor": "▷ 继续当前", "knowledge_qa": "· 普通问答"}[d.action.value]
     print(f"\n用户: {upstream_ir['query']}")
@@ -83,8 +82,8 @@ assert tm.snapshot(SID) == {**tm.snapshot(SID)}  # 栈未变(continue零修改)
 step({"primary_intent": "GENERAL_CHAT", "query": "回到刚才那道物理题", "slots": {}}, "恢复题4")
 
 # ⑦ 恢复已沉降的题1（SQLite 冷恢复）
-d = tm.decide(SID, UpstreamIntent.RESUME_HISTORY_TUTOR, False)
-d = tm.execute(SID, d, resume_task_id=d1.task.task_instance_id)
+d = tm.dispatch(SID, UpstreamIntent.RESUME_HISTORY_TUTOR, False,
+                resume_task_id=d1.task.task_instance_id)
 print(f"\n用户: 回到最开始那道数学题(已沉降)")
 print(f"  → 动作={d.action.value}  {d.reason}")
 view("冷恢复题1后")
@@ -92,7 +91,7 @@ view("冷恢复题1后")
 # ⑧ 完结题1（closed 入库，不可再恢复）
 tm.close(SID, d.task.task_instance_id)
 view("题1辅导完结(closed)")
-r = tm.execute(SID, tm.decide(SID, UpstreamIntent.RESUME_HISTORY_TUTOR, False),
-               resume_task_id=d.task.task_instance_id)
+r = tm.dispatch(SID, UpstreamIntent.RESUME_HISTORY_TUTOR, False,
+                resume_task_id=d.task.task_instance_id)
 print(f"\n尝试恢复已完结任务 → 动作={r.action.value}（closed不可恢复）")
 print("\n=== 演示结束：热栈切换/沉降/冷恢复/继续零修改/完结 全流程验证 ===")

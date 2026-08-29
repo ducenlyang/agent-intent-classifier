@@ -125,6 +125,7 @@ class ColdStore:
     def __init__(self, db_path: Path = COLD_DB_PATH):
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
+        self._puts_since_purge = 0
         self._db = sqlite3.connect(str(db_path), check_same_thread=False)
         self._db.execute("""
             CREATE TABLE IF NOT EXISTS cold_task (
@@ -136,6 +137,9 @@ class ColdStore:
                 last_interact_time REAL,
                 cold_saved_at    TEXT
             )""")
+        self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cold_session_status "
+            "ON cold_task(session_id, status)")
         self._db.commit()
 
     def put(self, session_id: str, task: TeachingTask) -> None:
@@ -147,6 +151,10 @@ class ColdStore:
                  task.question_meta.model_dump_json(), task.slots.model_dump_json(),
                  task.last_interact_time, datetime.now().isoformat()))
             self._db.commit()
+            self._puts_since_purge += 1
+            if self._puts_since_purge >= 50:   # 长驻进程低频顺带清理过期行
+                self._puts_since_purge = 0
+                self.purge_expired()
 
     def load(self, session_id: str, task_instance_id: str | None = None,
              status: str = "suspended") -> TeachingTask | None:
@@ -231,10 +239,15 @@ class TaskManager:
             return self._stacks[session_id]
 
     def _evict_sessions_if_over(self) -> None:
-        """会话栈超上限：LRU逐出最久不活跃的会话，栈内任务全量沉降冷存储。"""
+        """会话栈超上限：LRU逐出最久不活跃的会话，栈内任务全量沉降冷存储。
+        约定4保护：含【有效ongoing】的会话不参与逐出（有效任务永不离内存）；
+        仅当全部会话都持有有效ongoing（512上限下极端罕见）时才回退全局LRU，
+        此时active以suspended身份落库保证可resume——此为约定4的唯一显式例外。"""
         if len(self._stacks) <= self._max_sessions:
             return
-        oldest_sid = min(self._activity, key=lambda s: self._activity.get(s, 0))
+        candidates = [x for x in self._stacks if not self.is_active_valid(x)]
+        pool = candidates or list(self._stacks)
+        oldest_sid = min(pool, key=lambda x: self._activity.get(x, 0))
         st = self._stacks.pop(oldest_sid)
         self._activity.pop(oldest_sid, None)
         for t in ([st.active] if st.active else []) + st.suspended:
@@ -256,7 +269,8 @@ class TaskManager:
             return False
         return True
 
-    # ---------- 决策层（纯函数，不改状态） ----------
+    # ---------- 决策层（不修改task_stack内容；首次建栈/LRU逐出为其副作用，
+    # 运行时请统一走 dispatch() 入口） ----------
     def decide(self, session_id: str, intent: UpstreamIntent,
                has_new_question_entity: bool) -> Decision:
         valid = self.is_active_valid(session_id)
@@ -296,16 +310,26 @@ class TaskManager:
                         resume_task_id: str | None) -> Decision:
         with self._lock:
             st = self.stack(session_id)
-            # 会话活动钟：任何动作(含continue)都刷新——90分钟指"无交互"而非"无切题"
-            self._activity[session_id] = time.monotonic()
+            # 活动钟语义：仅任务相关动作(start/resume/continue)刷新。
+            # "90分钟无交互"指对【任务】无交互——无关问答/闲聊不得复活过期任务。
             if d.action is Action.START:
-                return self._start(st, question_meta or QuestionMeta(), d)
+                meta = question_meta or QuestionMeta()
+                if not (meta.question_text and meta.question_text.strip()):
+                    # 复审#4: START必须携带题面，否则降级knowledge_qa且不动栈
+                    # (防僵尸任务+防误挂起有效active)
+                    return Decision(action=Action.KNOWLEDGE_QA,
+                                    reason="START缺少题面(question_meta.question_text为空)"
+                                           "→降级knowledge_qa，task_stack未动")
+                self._activity[session_id] = time.monotonic()
+                return self._start(st, meta, d)
             if d.action is Action.RESUME:
+                self._activity[session_id] = time.monotonic()
                 return self._resume(st, d, resume_task_id)
             if d.action is Action.CONTINUE:
                 # 强约束：continue 绝不修改 task_stack（含 last_interact_time），仅透传
+                self._activity[session_id] = time.monotonic()
                 return d
-            return d   # knowledge_qa：不走任务栈
+            return d   # knowledge_qa：不走任务栈，不刷新活动钟
 
     def _start(self, st: TaskStack, meta: QuestionMeta, d: Decision) -> Decision:
         new_task = TeachingTask(task_instance_id=uuid.uuid4().hex,
@@ -390,10 +414,12 @@ class TaskManager:
 
     # ---------- FSM 推进（manager 内改栈的唯一合法途径） ----------
     def advance_active(self, session_id: str) -> str | None:
+        """推进active任务FSM一步。active无效(不存在/过期/元数据不完整)时
+        返回None拒绝推进——调用方可用is_active_valid区分原因。"""
         with self._lock:
-            st = self.stack(session_id)
-            if not st.active or st.active.status != "ongoing":
+            if not self.is_active_valid(session_id):
                 return None
+            st = self.stack(session_id)
             self._activity[session_id] = time.monotonic()
             return st.active.advance()
 
@@ -449,7 +475,8 @@ class TaskManager:
              {"role": "user", "content": query}], temperature=0.0, max_tokens=30)
         try:
             m = re.search(r"\{.*\}", content, re.S)
-            relevant = bool(json.loads(m.group(0)).get("relevant"))
+            parsed = json.loads(m.group(0)) if m else {}
+            relevant = parsed.get("relevant") is True   # 严格布尔：字符串"false"按无关处理
         except Exception:
             relevant = False   # 解析失败按无关处理(安全降级，不会动栈)
         if has_new_question_entity:
