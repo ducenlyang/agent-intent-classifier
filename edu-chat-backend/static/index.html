@@ -216,9 +216,7 @@
   .tp-text-full { color: var(--muted); word-break: break-all; flex: 1; }
   .tp-full { color: var(--muted); white-space: pre-wrap; word-break: break-all;
              line-height: 1.55; max-height: 260px; overflow-y: auto; }
-  .row.assistant { cursor: pointer; }
-  .row.assistant.selected .col { box-shadow: -3px 0 0 0 var(--accent); padding-left: 10px;
-                                 border-radius: 4px; }
+
   @media (max-width: 1080px) { #trace-panel { display: none; } }
 
   @media (prefers-reduced-motion: reduce) {
@@ -269,7 +267,7 @@
         </button>
       </h3>
       <div id="trace-body">
-        <div class="tp-empty">发送消息后，这里实时显示当前消息的识别与路由轨迹。<br><br>点击任意 AI 回复，可回看那条消息的完整轨迹。</div>
+        <div class="tp-empty">发送消息后，这里实时显示当前消息的识别与路由轨迹。</div>
       </div>
     </aside>
   </div>
@@ -452,13 +450,8 @@ function renderMessages() {
   if (!s || !s.messages.length) {
     thread.innerHTML = `<div id="empty">${EMPTY_HTML}</div>`; bindChips(); return;
   }
-  let lastTraced = null;
-  s.messages.forEach(m => {
-    const r = addBubble(m.role, m.content, m.meta, false);
-    if (m.trace) { r._trace = m.trace; lastTraced = r; }
-  });
+  s.messages.forEach(m => addBubble(m.role, m.content, m.meta, false));
   $("chat-area").scrollTop = $("chat-area").scrollHeight;
-  selectRow(lastTraced);
 }
 function addBubble(role, content, meta, scroll = true) {
   $("empty")?.remove();
@@ -468,7 +461,6 @@ function addBubble(role, content, meta, scroll = true) {
   // 用户无头像(右侧灰气泡)；AI左侧小logo+纯文本；.meta始终存在便于流式填充
   row.innerHTML = `<div class="col"><div class="bubble">${body}</div><div class="meta">${meta || ""}</div></div>`;
   THREAD().appendChild(row);
-  if (role !== "user") row.onclick = () => selectRow(row);
   if (scroll) $("chat-area").scrollTop = $("chat-area").scrollHeight;
   return row;
 }
@@ -487,12 +479,8 @@ function setTraceVisible(show) {
 /* ---------- 右侧对话轨迹面板 ---------- */
 const ROUTE_ZH = { risk: "风险拦截", intercept: "风险拦截", clarify: "反问补槽",
                    agent: "Agent生成", error: "异常" };
-let selectedRow = null;
-function selectRow(row) {
-  if (selectedRow && selectedRow.classList) selectedRow.classList.remove("selected");
-  selectedRow = row || null;
-  if (selectedRow && selectedRow.classList) selectedRow.classList.add("selected");
-  renderTracePanel(selectedRow ? selectedRow._trace : null);
+function selectRow(row) {   // 轨迹面板只随最新消息更新
+  renderTracePanel(row ? row._trace : null);
 }
 function renderTracePanel(t) {
   const body = $("trace-body");
