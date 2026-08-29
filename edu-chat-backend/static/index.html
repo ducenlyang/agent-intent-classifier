@@ -8,7 +8,7 @@
 <style>
   :root {
     /* DeepSeek Harness 设计令牌——浅色(默认): 实测自其CSS设计系统 */
-    --bg: #ffffff; --sidebar: #f9fafb; --sidebar-hover: rgba(38, 49, 72, .06);
+    --bg: #ffffff; --sidebar: #f9fafb; --sidebar-2: #f9fafb; --sidebar-hover: rgba(38, 49, 72, .06);
     --surface-2: #f1f3f5;            /* 输入卡/用户气泡 */
     --btn-secondary: #ffffff;        /* 新建会话按钮 */
     --btn-secondary-border: rgba(38, 49, 72, .1);
@@ -19,34 +19,21 @@
     --scroll: rgba(38, 49, 72, .22); --th-bg: rgba(38, 49, 72, .04);
     --send-disabled: rgba(38, 49, 72, .12); --card-shadow: 0 2px 12px rgba(38, 49, 72, .08);
   }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      /* 深色令牌: 与Harness深色模式一致 */
-      --bg: #151517; --sidebar: #151517; --sidebar-hover: rgba(255, 255, 255, .06);
-      --surface-2: #2c2c2e; --btn-secondary: #43454a; --btn-secondary-border: rgba(255, 255, 255, .12);
-      --accent: #679efe; --accent-hover: #8ab2ff; --accent-soft: rgba(103, 158, 254, .14);
-      --text: #f9fafb; --muted: #cfd3d6; --muted-dim: #adb2b8;
-      --border: rgba(255, 255, 255, .06); --border-strong: rgba(255, 255, 255, .12);
-      --user-bubble: #2c2c2e; --code-bg: rgba(255, 255, 255, .08);
-      --scroll: rgba(255, 255, 255, .14); --th-bg: rgba(255, 255, 255, .05);
-      --send-disabled: rgba(255, 255, 255, .12); --card-shadow: 0 2px 12px rgba(0, 0, 0, .35);
-    }
-  }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { height: 100%; overflow: hidden; }
   body { font-family: "Segoe UI", "Microsoft YaHei", -apple-system, sans-serif;
-         display: flex; background: var(--bg); color: var(--text); font-size: 15px; }
+         display: flex; background: var(--bg); color: var(--text); font-size: 16px; }
   button { font-family: inherit; cursor: pointer; }
   button:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
   /* ---------- 侧边栏（DeepSeek式浅灰） ---------- */
-  #sidebar { width: 260px; background: var(--sidebar); border-right: 1px solid var(--border);
+  #sidebar { width: 280px; background: var(--sidebar-2); border-right: 1px solid var(--border);
              display: flex; flex-direction: column; flex-shrink: 0; }
   .brand { display: flex; align-items: center; gap: 9px; padding: 18px 16px 10px; }
   .brand-mark { width: 30px; height: 30px; border-radius: 50%; background: var(--accent);
                 display: flex; align-items: center; justify-content: center; color: #fff; flex-shrink: 0; }
   .brand h1 { font-size: 15px; font-weight: 600; }
-  #new-chat { margin: 8px 12px 12px; padding: 8px 16px; background: var(--btn-secondary);
+  #new-chat { margin: 8px 4px 12px; padding: 8px 16px; background: var(--btn-secondary);
               color: var(--text); border: 1px solid var(--btn-secondary-border); border-radius: 12px;
               font-size: 14px; display: flex; align-items: center; justify-content: center;
               gap: 6px; min-height: 38px; transition: background .15s; }
@@ -144,20 +131,22 @@
 
   /* ---------- 输入区（底部居中胶囊） ---------- */
   #input-bar { padding: 8px 24px 18px; background: linear-gradient(transparent, var(--bg) 40%); }
-  .input-card { max-width: 760px; margin: 0 auto; display: flex; align-items: flex-end;
-                gap: 10px; background: var(--surface-2); border: 1px solid var(--border);
-                border-radius: 22px; padding: 10px 12px 10px 18px;
-                box-shadow: var(--card-shadow);
+  .input-card { max-width: 780px; margin: 0 auto; display: flex; flex-direction: column;
+                gap: 12px; background: var(--surface-2); border: 1px solid var(--border);
+                border-radius: 22px; padding: 10px 0 0;
+                box-shadow: rgba(0,0,0,.02) 0 4px 12px, rgba(0,0,0,.04) 0 2px 8px;
                 transition: border-color .15s, box-shadow .15s; }
+  .input-row { display: flex; align-items: flex-end; gap: 10px; padding: 0 10px 0 0; }
   .input-card:focus-within { border-color: var(--accent);
                              box-shadow: 0 2px 16px var(--accent-soft), var(--card-shadow); }
-  #query { flex: 1; border: none; outline: none; resize: none; font-size: 15px;
-           font-family: inherit; line-height: 1.6; max-height: 140px;
-           background: transparent; color: var(--text); padding: 6px 0; }
+  #query { flex: 1; border: none; outline: none; resize: none; font-size: 16px;
+           font-family: inherit; line-height: 22px; max-height: 140px;
+           background: transparent; color: var(--text); padding: 4px 12px 0 16px; }
   #query::placeholder { color: #ababab; }
-  #send { width: 36px; height: 36px; border: none; border-radius: 999px; flex-shrink: 0;
-          background: var(--accent); color: #fff; display: flex; align-items: center;
-          justify-content: center; transition: background .2s, opacity .2s; }
+  #send { width: 34px; height: 34px; border: none; border-radius: 999px; flex-shrink: 0;
+          margin: 0 0 10px auto; background: var(--accent); color: #fff;
+          display: flex; align-items: center; justify-content: center;
+          transition: background .2s, opacity .2s; }
   #send:hover { background: var(--accent-hover); }
   #send:disabled { background: var(--send-disabled); cursor: not-allowed; }
 
@@ -235,10 +224,14 @@
       <div id="chat-area"><div class="thread" id="thread"></div></div>
       <div id="input-bar">
         <div class="input-card">
-          <textarea id="query" rows="1" placeholder="输入消息，Enter 发送（Shift+Enter 换行）" aria-label="消息输入框"></textarea>
-          <button id="send" aria-label="发送">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg>
-          </button>
+          <div class="input-row">
+            <textarea id="query" rows="1" placeholder="输入消息，Enter 发送（Shift+Enter 换行）" aria-label="消息输入框"></textarea>
+          </div>
+          <div class="input-row">
+            <button id="send" aria-label="发送">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg>
+            </button>
+          </div>
         </div>
       </div>
     </div>
