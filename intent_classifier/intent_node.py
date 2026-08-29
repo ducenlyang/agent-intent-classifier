@@ -159,7 +159,7 @@ class IntentPipeline:
             and out.bert_short_slots[f]["value"] != hints[f]
         ]
 
-        if intent_ok and not weak_slots and not complex_q and not disagree                 and not multi_subject:
+        if intent_ok and not weak_slots and not complex_q and not disagree and not multi_subject:
             slots, slot_conf = _merge_short_slots(hints, out.bert_short_slots)
             # 短路跳过了L3，长槽位用零成本词典抽取补齐(否则"寒假"类时间/主题丢失)
             lex = extract_lexicon_slots(query)

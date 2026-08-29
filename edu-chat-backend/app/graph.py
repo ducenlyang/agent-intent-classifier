@@ -25,6 +25,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
 from . import agents, gateway, slots
+from .slots import CLARIFY_QUESTIONS
 from .guard import SAFE_FALLBACK, guard, stream_violation
 from .gateway import IntentResult, Slots
 from .llm_client import chat_completion
@@ -266,16 +267,6 @@ def _wants_correction(q: str) -> bool:
     return any(w in q for w in CORRECT_WORDS)
 
 
-def _slot_states_of(state: dict, merged_slots) -> dict:
-    """必填槽位三态快照: filled / uncollected（pending_correction 只在修正轮出现）。"""
-    from .config import REQUIRED_SLOTS
-    from .gateway import IntentResult
-    ir = state.get("intent_result")
-    intent = ir.primary_intent.value if ir else "UNKNOWN"
-    return {f: ("filled" if getattr(merged_slots, f, None) else "uncollected")
-            for f in REQUIRED_SLOTS.get(intent, [])}
-
-
 def contextual_resolve_node(state: ChatState) -> dict:
     ir: IntentResult = state["intent_result"]
     q = (state.get("user_query") or "").strip()
@@ -302,7 +293,6 @@ def contextual_resolve_node(state: ChatState) -> dict:
                 setattr(ir2.slots, f, v)
             ir2.missing_slots = reask
             if reask:  # 还有没给新值的槽位 → 单独重问
-                from .slots import CLARIFY_QUESTIONS
                 reply = "好的，已修改。那" + " ".join(
                     CLARIFY_QUESTIONS.get(f, f"请补充{f}") for f in reask)
                 print(f"[dm] 消歧 session={sid} layer=SLOT_CORRECT "
@@ -316,7 +306,6 @@ def contextual_resolve_node(state: ChatState) -> dict:
                     "last_prompt_type": "NONE", "llm_calls": []}
         # 修正词但没说新值 → 全部等待槽位转 pending_correction，重问第一等待槽
         f0 = asked[0]
-        from .slots import CLARIFY_QUESTIONS
         reply = "没问题，我们改一下。" + CLARIFY_QUESTIONS.get(f0, f"请补充{f0}")
         print(f"[dm] 消歧 session={sid} layer=SLOT_CORRECT 重问={f0}")
         return {"pending_direct_reply": reply,
