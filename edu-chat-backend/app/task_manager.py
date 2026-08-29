@@ -124,7 +124,7 @@ class Decision(BaseModel):
 class ColdStore:
     def __init__(self, db_path: Path = COLD_DB_PATH):
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()   # 可重入: put()低频purge时同线程二次进入
         self._puts_since_purge = 0
         self._db = sqlite3.connect(str(db_path), check_same_thread=False)
         self._db.execute("""

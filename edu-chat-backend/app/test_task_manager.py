@@ -231,13 +231,24 @@ orig2 = lc2.chat_completion
 try:
     lc2.chat_completion = lambda msgs, **kw: '{"relevant": "false"}'
     tmx, sx = fresh(), "sx"
-    start(tmx, sx, "锚定题目")
-    tmx._activity[sx] -= 91 * 60                     # active过期→valid=False
+    start(tmx, sx, "锚定题目")                        # active保持【有效】→ 锁死严格布尔修复
     d = tmx.decide_via_llm(sx, "无关输入", 0.4, False)
     assert d.action is Action.KNOWLEDGE_QA, d
     ok('relevant="false"(字符串)按无关处理(严格布尔)')
 finally:
     lc2.chat_completion = orig2
+
+print("== 9.7 ColdStore put→purge 死锁回归(第50次写入) ==")
+import threading as _th
+tmp2 = Path(tempfile.mkdtemp()) / "deadlock.db"
+store = ColdStore(tmp2)
+store._puts_since_purge = 49
+_t = _th.Thread(target=lambda: store.put(
+    "sDead", TeachingTask(task_instance_id="trigger", question_meta=q("触发purge"))))
+_t.start(); _t.join(timeout=5)
+assert not _t.is_alive(), "DEADLOCK: put()第50次触发purge死锁"
+assert store._puts_since_purge == 0
+ok("put→purge 无死锁(RLock可重入), 计数器归零")
 
 print("== 10. FSM 推进: manager内合法改栈 ==")
 tm, sid = fresh(), "s12"
